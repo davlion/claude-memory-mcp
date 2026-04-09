@@ -9,7 +9,7 @@ if [[ ! -f "$CONFIG" ]]; then
 fi
 
 LOCAL_CACHE=$(jq -r '.local_cache // "~/.claude-memories"' "$CONFIG" | sed "s|~|$HOME|")
-mkdir -p "$LOCAL_CACHE"
+mkdir -p "$LOCAL_CACHE" && chmod 700 "$LOCAL_CACHE"
 
 # Read existing sync data or start fresh
 SYNC_FILE="$LOCAL_CACHE/last-sync.json"
@@ -18,6 +18,11 @@ SYNC_FILE="$LOCAL_CACHE/last-sync.json"
 vm_count=$(jq '.vms | length' "$CONFIG")
 for (( i=0; i<vm_count; i++ )); do
     name=$(jq -r ".vms[$i].name" "$CONFIG")
+    # Reject VM names that could cause path traversal
+    if [[ "$name" == *"/"* || "$name" == ".." || "$name" == "." ]]; then
+        echo "Invalid VM name: $name" >&2
+        continue
+    fi
     host=$(jq -r ".vms[$i].host" "$CONFIG")
     user=$(jq -r ".vms[$i].user" "$CONFIG")
     key=$(jq -r ".vms[$i].ssh_key" "$CONFIG" | sed "s|~|$HOME|")

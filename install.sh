@@ -34,6 +34,7 @@ if [[ -d "$MEMORY_DIR" ]]; then
     echo "  $MEMORY_DIR already exists, skipping."
 else
     mkdir -p "$MEMORY_DIR"
+    chmod 700 "$MEMORY_DIR"
     echo "  Created $MEMORY_DIR"
 fi
 
@@ -102,6 +103,7 @@ if [[ -f "$CONFIG_FILE" ]]; then
         echo "  Keeping existing config.json."
     else
         echo "$config_json" > "$CONFIG_FILE"
+        chmod 600 "$CONFIG_FILE"
         echo "  Wrote $CONFIG_FILE"
     fi
 else
