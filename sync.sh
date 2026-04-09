@@ -8,6 +8,12 @@ if [[ ! -f "$CONFIG" ]]; then
     exit 1
 fi
 
+# ── Log rotation: keep ~7 days (2000 lines ≈ 288 runs/day × 7) ───────
+SYNC_LOG="${HOME}/.claude-memories/sync.log"
+if [[ -f "$SYNC_LOG" ]] && (( $(wc -l < "$SYNC_LOG") > 2000 )); then
+    tail -n 1000 "$SYNC_LOG" > "$SYNC_LOG.tmp" && mv "$SYNC_LOG.tmp" "$SYNC_LOG"
+fi
+
 LOCAL_CACHE=$(jq -r '.local_cache // "~/.claude-memories"' "$CONFIG" | sed "s|~|$HOME|")
 mkdir -p "$LOCAL_CACHE" && chmod 700 "$LOCAL_CACHE"
 

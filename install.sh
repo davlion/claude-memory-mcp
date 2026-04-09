@@ -13,6 +13,45 @@ PLIST_DIR="$HOME/Library/LaunchAgents"
 PLIST_PATH="$PLIST_DIR/$PLIST_NAME.plist"
 SYNC_LOG="$MEMORY_DIR/sync.log"
 
+# ── Pre-flight: check required tools ──────────────────────────────────
+# Tools that ship with macOS but we still verify
+missing_system=()
+for cmd in ssh-keygen ssh rsync launchctl; do
+    if ! command -v "$cmd" &>/dev/null; then
+        missing_system+=("$cmd")
+    fi
+done
+
+# Tools that typically need to be installed
+missing_install=()
+for cmd in jq ssh-copy-id python3; do
+    if ! command -v "$cmd" &>/dev/null; then
+        missing_install+=("$cmd")
+    fi
+done
+
+if (( ${#missing_system[@]} || ${#missing_install[@]} )); then
+    echo "Error: the following required tools are not found:"
+    for cmd in "${missing_system[@]}"; do
+        echo "  - $cmd  (expected macOS system tool)"
+    done
+    for cmd in "${missing_install[@]}"; do
+        echo "  - $cmd"
+    done
+    if (( ${#missing_install[@]} )); then
+        echo ""
+        echo "Install with:  brew install ${missing_install[*]}"
+    fi
+    exit 1
+fi
+
+# Check that the Python mcp package is available
+if ! python3 -c "import mcp" &>/dev/null; then
+    echo "Error: Python 'mcp' package is not installed."
+    echo "  Install it with:  pip3 install mcp"
+    exit 1
+fi
+
 # ── Intro ───────────────────────────────────────────────────────────────
 echo "========================================"
 echo "  claude-memory-mcp installer"
