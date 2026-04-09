@@ -16,8 +16,8 @@ def _cache_dir() -> Path:
     if config.exists():
         try:
             data = json.loads(config.read_text(encoding="utf-8"))
-            if "cache_dir" in data:
-                return Path(data["cache_dir"]).expanduser()
+            if "local_cache" in data:
+                return Path(data["local_cache"]).expanduser()
         except json.JSONDecodeError:
             pass
     return CACHE_DIR

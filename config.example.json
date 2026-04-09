@@ -6,8 +6,8 @@
       "user": "youruser",
       "ssh_key": "~/.ssh/claude_memory_ed25519",
       "memory_paths": [
-        "~/.claude/projects/-home-dav-src-doa/memory",
-        "~/.claude/projects/-home-dav-src-other/memory"
+        "~/.claude/projects/-home-youruser-src-myproject/memory",
+        "~/.claude/projects/-home-youruser-src-other/memory"
       ]
     },
     {
@@ -16,7 +16,7 @@
       "user": "youruser",
       "ssh_key": "~/.ssh/claude_memory_ed25519",
       "memory_paths": [
-        "~/.claude/projects/-home-dav-src-firmware/memory"
+        "~/.claude/projects/-home-youruser-src-firmware/memory"
       ]
     }
   ],

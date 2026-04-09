@@ -39,7 +39,7 @@ for (( i=0; i<vm_count; i++ )); do
 
         if ! rsync -az --delete --timeout=5 \
             -e "ssh $ssh_opts" \
-            "$user@$host:$mem_path/" "$dest" 2>/dev/null; then
+            "$user@$host:$mem_path/" "$dest"; then
             success=false
         fi
     done
