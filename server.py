@@ -1,6 +1,8 @@
 """MCP server exposing Claude Code memory files synced from VMs."""
 
 import json
+import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -140,6 +142,70 @@ def sync_status() -> str:
             "reachable": info.get("success", False),
         })
     return json.dumps(results, indent=2)
+
+
+@mcp.tool()
+def memory_sync_health() -> str:
+    """Check whether the memory sync job is healthy: launchd status, per-VM sync age, and recent log errors."""
+    cache = _cache_dir()
+    result = {}
+
+    # 1. launchd job status
+    try:
+        proc = subprocess.run(
+            ["launchctl", "list"],
+            capture_output=True, text=True, timeout=5
+        )
+        job_line = next(
+            (l for l in proc.stdout.splitlines() if "com.claude.memory-sync" in l),
+            None
+        )
+        if job_line:
+            parts = job_line.split()
+            result["launchd"] = {
+                "loaded": True,
+                "pid": parts[0] if parts[0] != "-" else None,
+                "last_exit_code": int(parts[1]) if len(parts) > 1 else None,
+            }
+        else:
+            result["launchd"] = {"loaded": False}
+    except Exception as e:
+        result["launchd"] = {"error": str(e)}
+
+    # 2. Per-VM sync status + staleness
+    sync_data = _read_sync_data(cache)
+    now = datetime.now(timezone.utc)
+    vms = []
+    for vm, info in sorted(sync_data.items()):
+        last_sync = info.get("last_sync", "")
+        age_minutes = None
+        try:
+            ts = datetime.fromisoformat(last_sync).replace(tzinfo=timezone.utc)
+            age_minutes = round((now - ts).total_seconds() / 60, 1)
+        except ValueError:
+            pass
+        vms.append({
+            "vm": vm,
+            "last_sync": last_sync,
+            "age_minutes": age_minutes,
+            "success": info.get("success", False),
+            "stale": age_minutes is not None and age_minutes > 15,
+        })
+    result["vms"] = vms
+
+    # 3. Recent log — last 20 lines, flag any ERROR lines
+    log_path = cache / "sync.log"
+    if log_path.exists():
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+        recent = lines[-20:]
+        result["recent_log"] = recent
+        result["errors"] = [l for l in recent if "ERROR" in l]
+    else:
+        result["recent_log"] = []
+        result["errors"] = []
+        result["log_missing"] = True
+
+    return json.dumps(result, indent=2)
 
 
 if __name__ == "__main__":

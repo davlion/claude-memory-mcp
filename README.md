@@ -63,6 +63,7 @@ ssh-copy-id -i ~/.ssh/claude_memory_ed25519.pub user@your-vm.local
 | `read_memories` | Returns the MEMORY.md index and all referenced memory file contents for a project |
 | `search_memories` | Full-text search across all memory files from all projects |
 | `sync_status` | Shows which VMs were reachable and when each was last synced |
+| `memory_sync_health` | Full health check: launchd job status, per-VM sync age, and any recent errors from the sync log |
 
 ## Configuration
 
