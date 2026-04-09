@@ -1,0 +1,25 @@
+{
+  "vms": [
+    {
+      "name": "dev-vm",
+      "host": "dev-vm.local",
+      "user": "dav",
+      "ssh_key": "~/.ssh/claude_memory_ed25519",
+      "memory_paths": [
+        "~/.claude/projects/-home-dav-src-doa/memory",
+        "~/.claude/projects/-home-dav-src-other/memory"
+      ]
+    },
+    {
+      "name": "build-vm",
+      "host": "192.168.1.50",
+      "user": "dav",
+      "ssh_key": "~/.ssh/claude_memory_ed25519",
+      "memory_paths": [
+        "~/.claude/projects/-home-dav-src-firmware/memory"
+      ]
+    }
+  ],
+  "local_cache": "~/.claude-memories",
+  "sync_interval_minutes": 5
+}
