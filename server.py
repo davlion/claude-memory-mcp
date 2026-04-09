@@ -1,0 +1,147 @@
+"""MCP server exposing Claude Code memory files synced from VMs."""
+
+import json
+from datetime import datetime
+from pathlib import Path
+
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("claude-memory")
+
+CACHE_DIR = Path.home() / ".claude-memories"
+
+
+def _cache_dir() -> Path:
+    """Return cache directory, respecting config.json if present."""
+    config = CACHE_DIR / "config.json"
+    if config.exists():
+        try:
+            data = json.loads(config.read_text())
+            if "cache_dir" in data:
+                return Path(data["cache_dir"]).expanduser()
+        except (json.JSONDecodeError, KeyError):
+            pass
+    return CACHE_DIR
+
+
+def _iter_projects(cache: Path):
+    """Yield (vm_name, project_dir, project_name) for every project in cache."""
+    for vm_dir in sorted(cache.iterdir()):
+        if not vm_dir.is_dir() or vm_dir.name.startswith(".") or vm_dir.name.endswith(".json"):
+            continue
+        for proj_dir in sorted(vm_dir.iterdir()):
+            if proj_dir.is_dir():
+                name = proj_dir.name.lstrip("-")
+                yield vm_dir.name, proj_dir, name
+
+
+def _read_sync_data(cache: Path) -> dict:
+    """Read last-sync.json, returning {} on any error."""
+    path = cache / "last-sync.json"
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+@mcp.tool()
+def list_projects() -> str:
+    """List all known projects across all VMs with last-sync time and memory count."""
+    cache = _cache_dir()
+    if not cache.exists():
+        return json.dumps([])
+    sync_data = _read_sync_data(cache)
+    results = []
+    for vm, proj_dir, proj_name in _iter_projects(cache):
+        mem_dir = proj_dir / "memory"
+        count = len(list(mem_dir.glob("*.md"))) if mem_dir.is_dir() else 0
+        last_sync = sync_data.get(vm, {}).get("last_sync", "unknown")
+        results.append({
+            "vm": vm,
+            "project": proj_name,
+            "last_sync": last_sync,
+            "memory_count": count,
+        })
+    return json.dumps(results, indent=2)
+
+
+@mcp.tool()
+def read_memories(project: str) -> str:
+    """Read MEMORY.md index and all memory files for a project."""
+    cache = _cache_dir()
+    if not cache.exists():
+        return json.dumps({"error": "Cache directory not found"})
+    for vm, proj_dir, proj_name in _iter_projects(cache):
+        if proj_name == project:
+            mem_dir = proj_dir / "memory"
+            if not mem_dir.is_dir():
+                return json.dumps({"project": project, "vm": vm, "index": "", "memories": []})
+            index_path = mem_dir / "MEMORY.md"
+            index = index_path.read_text() if index_path.exists() else ""
+            memories = []
+            for f in sorted(mem_dir.glob("*.md")):
+                if f.name == "MEMORY.md":
+                    continue
+                try:
+                    memories.append({"file": f.name, "content": f.read_text()})
+                except OSError:
+                    memories.append({"file": f.name, "content": "[read error]"})
+            return json.dumps({"project": project, "vm": vm, "index": index, "memories": memories}, indent=2)
+    return json.dumps({"error": f"Project '{project}' not found"})
+
+
+@mcp.tool()
+def search_memories(query: str) -> str:
+    """Full-text case-insensitive search across all memory files from all projects."""
+    cache = _cache_dir()
+    if not cache.exists():
+        return json.dumps([])
+    q = query.lower()
+    results = []
+    for vm, proj_dir, proj_name in _iter_projects(cache):
+        mem_dir = proj_dir / "memory"
+        if not mem_dir.is_dir():
+            continue
+        for f in sorted(mem_dir.glob("*.md")):
+            try:
+                content = f.read_text()
+            except OSError:
+                continue
+            if q in content.lower():
+                # Extract a context window around the match
+                idx = content.lower().index(q)
+                start = max(0, idx - 80)
+                end = min(len(content), idx + len(query) + 80)
+                match_ctx = content[start:end].replace("\n", " ")
+                if start > 0:
+                    match_ctx = "..." + match_ctx
+                if end < len(content):
+                    match_ctx = match_ctx + "..."
+                results.append({
+                    "vm": vm,
+                    "project": proj_name,
+                    "file": f.name,
+                    "match": match_ctx,
+                })
+    return json.dumps(results, indent=2)
+
+
+@mcp.tool()
+def sync_status() -> str:
+    """Show which VMs are reachable and when each was last synced."""
+    cache = _cache_dir()
+    sync_data = _read_sync_data(cache)
+    results = []
+    for vm, info in sorted(sync_data.items()):
+        results.append({
+            "vm": vm,
+            "last_sync": info.get("last_sync", "unknown"),
+            "reachable": info.get("success", False),
+        })
+    return json.dumps(results, indent=2)
+
+
+if __name__ == "__main__":
+    mcp.run()
