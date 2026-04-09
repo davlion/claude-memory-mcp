@@ -149,16 +149,25 @@ else
     echo ""
 fi
 
-# ── 6. Claude Desktop instructions ────────────────────────────────────
-echo "========================================"
-echo "  Setup complete!"
-echo "========================================"
-echo ""
+# ── 6. Claude Desktop configuration ───────────────────────────────────
+DESKTOP_CONFIG="$HOME/Library/Application Support/Claude/claude_desktop_config.json"
 echo "--- Claude Desktop configuration ---"
-echo "Add (or merge) the following into:"
-echo "  ~/Library/Application Support/Claude/claude_desktop_config.json"
-echo ""
-cat <<EOF
+if [[ -f "$DESKTOP_CONFIG" ]]; then
+    existing=$(cat "$DESKTOP_CONFIG")
+    if echo "$existing" | jq -e '.mcpServers["claude-memory"]' &>/dev/null; then
+        echo "  claude-memory MCP entry already present, skipping."
+    else
+        updated=$(echo "$existing" | jq \
+            --arg cmd "${VENV_DIR}/bin/python3" \
+            --arg srv "${SCRIPT_DIR}/server.py" \
+            '.mcpServers["claude-memory"] = {"command": $cmd, "args": [$srv]}')
+        echo "$updated" > "$DESKTOP_CONFIG"
+        echo "  Added claude-memory to $DESKTOP_CONFIG"
+        echo "  Restart Claude Desktop to activate the MCP server."
+    fi
+else
+    mkdir -p "$(dirname "$DESKTOP_CONFIG")"
+    cat > "$DESKTOP_CONFIG" <<EOF
 {
   "mcpServers": {
     "claude-memory": {
@@ -168,6 +177,14 @@ cat <<EOF
   }
 }
 EOF
+    echo "  Created $DESKTOP_CONFIG"
+    echo "  Restart Claude Desktop to activate the MCP server."
+fi
+
+echo ""
+echo "========================================"
+echo "  Setup complete!"
+echo "========================================"
 echo ""
 echo "To manage VMs later, run: ./manage_vms.py"
 echo "Sync log: $SYNC_LOG"

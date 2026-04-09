@@ -43,8 +43,10 @@ cd claude-memory-mcp
 
 # 2. Run the interactive installer
 ./install.sh
-# Asks for VM hostnames/usernames, generates SSH key,
-# installs launchd plist, configures Claude Desktop
+# - Asks for VM hostnames/usernames
+# - Generates SSH key
+# - Installs launchd sync job (every 5 min)
+# - Automatically adds MCP server entry to Claude Desktop config
 
 # 3. Copy the SSH public key to each VM
 ssh-copy-id -i ~/.ssh/claude_memory_ed25519.pub user@your-vm.local
@@ -53,6 +55,7 @@ ssh-copy-id -i ~/.ssh/claude_memory_ed25519.pub user@your-vm.local
 
 # 5. Ask Claude:
 #    "What do you know about my projects?"
+#    "Check memory sync health"
 ```
 
 ## MCP Tools
