@@ -105,7 +105,22 @@ Ctrl-C at the main menu is treated as "Done" (with the unvalidated VM check).
 
 ## Validation
 
-Validation state is held in memory only (not persisted to config.json). All VMs start as unvalidated on launch.
+Validation state is persisted to `~/.claude-memories/validation.json` and loaded on TUI launch, so status survives across runs. VMs not present in the file are treated as unvalidated.
+
+```json
+{
+  "dev-vm": {
+    "ssh": true,
+    "paths": {
+      "~/.claude/projects/-home-dav-src-foo/memory": true,
+      "~/.claude/projects/-home-dav-src-bar/memory": false
+    },
+    "last_tested": "2026-04-09T14:30:00"
+  }
+}
+```
+
+The file is written after each test. Entries for VMs that have been removed from config are pruned on save.
 
 ### Three-tier status
 
