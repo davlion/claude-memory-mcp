@@ -45,24 +45,20 @@ if (( ${#missing_system[@]} || ${#missing_install[@]} )); then
     exit 1
 fi
 
-# Check that the Python mcp package is available
-if ! python3 -c "import mcp" &>/dev/null; then
-    echo "Error: Python 'mcp' package is not installed."
-    echo "  Install it with:  pip3 install mcp"
-    exit 1
-fi
-
 # ── Intro ───────────────────────────────────────────────────────────────
 echo "========================================"
 echo "  claude-memory-mcp installer"
 echo "========================================"
 echo ""
+VENV_DIR="$SCRIPT_DIR/.venv"
+
 echo "This script will:"
 echo "  1. Create $MEMORY_DIR directory"
-echo "  2. Generate an SSH keypair at $SSH_KEY (if needed)"
-echo "  3. Ask you for VM details and build config.json"
-echo "  4. Install a launchd plist to sync every 5 minutes"
-echo "  5. Show how to configure Claude Desktop"
+echo "  2. Set up a Python venv and install the mcp package"
+echo "  3. Generate an SSH keypair at $SSH_KEY (if needed)"
+echo "  4. Ask you for VM details and build config.json"
+echo "  5. Install a launchd plist to sync every 5 minutes"
+echo "  6. Show how to configure Claude Desktop"
 echo ""
 read -rp "Press Enter to continue (Ctrl-C to abort)..."
 echo ""
@@ -79,7 +75,19 @@ fi
 
 mkdir -p "$HOME/.ssh"
 
-# ── 2. SSH keypair ─────────────────────────────────────────────────────
+# ── 2. Python venv ────────────────────────────────────────────────────
+echo ""
+echo "--- Python virtual environment ---"
+if [[ -d "$VENV_DIR" ]] && "$VENV_DIR/bin/python3" -c "import mcp" &>/dev/null; then
+    echo "  $VENV_DIR already exists with mcp package, skipping."
+else
+    echo "  Creating venv at $VENV_DIR ..."
+    python3 -m venv "$VENV_DIR"
+    "$VENV_DIR/bin/pip" install --quiet mcp
+    echo "  Installed mcp package into venv."
+fi
+
+# ── 3. SSH keypair ─────────────────────────────────────────────────────
 echo ""
 echo "--- SSH keypair ---"
 if [[ -f "$SSH_KEY" ]]; then
@@ -214,7 +222,7 @@ cat <<EOF
 {
   "mcpServers": {
     "claude-memory": {
-      "command": "python3",
+      "command": "${VENV_DIR}/bin/python3",
       "args": ["${SCRIPT_DIR}/server.py"]
     }
   }
