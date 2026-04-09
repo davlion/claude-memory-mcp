@@ -14,6 +14,8 @@ if [[ -f "$SYNC_LOG" ]] && (( $(wc -l < "$SYNC_LOG") > 2000 )); then
     tail -n 1000 "$SYNC_LOG" > "$SYNC_LOG.tmp" && mv "$SYNC_LOG.tmp" "$SYNC_LOG"
 fi
 
+echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] sync started"
+
 LOCAL_CACHE=$(jq -r '.local_cache // "~/.claude-memories"' "$CONFIG" | sed "s|~|$HOME|")
 mkdir -p "$LOCAL_CACHE" && chmod 700 "$LOCAL_CACHE"
 
@@ -45,7 +47,8 @@ for (( i=0; i<vm_count; i++ )); do
 
         if ! rsync -az --delete --timeout=5 \
             -e "ssh $ssh_opts" \
-            "$user@$host:$mem_path/" "$dest"; then
+            "$user@$host:$mem_path/" "$dest" 2>&1; then
+            echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] ERROR: rsync failed for $name:$mem_path" >&2
             success=false
         fi
     done
@@ -57,3 +60,4 @@ for (( i=0; i<vm_count; i++ )); do
 done
 
 echo "$sync_data" > "$SYNC_FILE"
+echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] sync complete"

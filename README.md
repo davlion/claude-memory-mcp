@@ -104,6 +104,22 @@ Do not commit `config.json` — it is listed in `.gitignore`.
 - **No open port**: The MCP server communicates with Claude Desktop via stdio only. It does not open any network port.
 - **Cache permissions**: The cache directory (`~/.claude-memories/`) is created with `700` permissions (owner read/write/execute only).
 
+## Claude Code Skills
+
+This repo includes Claude Code skills that make working with the memory sync system easier.
+
+### memory-sync-status
+
+Diagnoses whether memory sync is working: checks launchd job status, per-VM sync timestamps, and the sync log for errors.
+
+**Install:**
+```bash
+mkdir -p ~/.claude/skills/memory-sync-status
+cp skills/memory-sync-status/SKILL.md ~/.claude/skills/memory-sync-status/SKILL.md
+```
+
+**Usage:** Ask Claude Code "is memory sync working?" and it will walk through the diagnosis automatically.
+
 ## Requirements
 
 - macOS (uses launchd for the sync cron job)
