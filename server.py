@@ -1,7 +1,6 @@
 """MCP server exposing Claude Code memory files synced from VMs."""
 
 import json
-from datetime import datetime
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -16,10 +15,10 @@ def _cache_dir() -> Path:
     config = CACHE_DIR / "config.json"
     if config.exists():
         try:
-            data = json.loads(config.read_text())
+            data = json.loads(config.read_text(encoding="utf-8"))
             if "cache_dir" in data:
                 return Path(data["cache_dir"]).expanduser()
-        except (json.JSONDecodeError, KeyError):
+        except json.JSONDecodeError:
             pass
     return CACHE_DIR
 
@@ -40,7 +39,7 @@ def _read_sync_data(cache: Path) -> dict:
     path = cache / "last-sync.json"
     if path.exists():
         try:
-            return json.loads(path.read_text())
+            return json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             pass
     return {}
@@ -79,13 +78,13 @@ def read_memories(project: str) -> str:
             if not mem_dir.is_dir():
                 return json.dumps({"project": project, "vm": vm, "index": "", "memories": []})
             index_path = mem_dir / "MEMORY.md"
-            index = index_path.read_text() if index_path.exists() else ""
+            index = index_path.read_text(encoding="utf-8") if index_path.exists() else ""
             memories = []
             for f in sorted(mem_dir.glob("*.md")):
                 if f.name == "MEMORY.md":
                     continue
                 try:
-                    memories.append({"file": f.name, "content": f.read_text()})
+                    memories.append({"file": f.name, "content": f.read_text(encoding="utf-8")})
                 except OSError:
                     memories.append({"file": f.name, "content": "[read error]"})
             return json.dumps({"project": project, "vm": vm, "index": index, "memories": memories}, indent=2)
@@ -106,7 +105,7 @@ def search_memories(query: str) -> str:
             continue
         for f in sorted(mem_dir.glob("*.md")):
             try:
-                content = f.read_text()
+                content = f.read_text(encoding="utf-8")
             except OSError:
                 continue
             if q in content.lower():
