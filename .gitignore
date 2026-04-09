@@ -1,5 +1,6 @@
 config.json
 last-sync.json
+validation.json
 *.log
 *.pem
 .env

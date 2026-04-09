@@ -54,9 +54,9 @@ VENV_DIR="$SCRIPT_DIR/.venv"
 
 echo "This script will:"
 echo "  1. Create $MEMORY_DIR directory"
-echo "  2. Set up a Python venv and install the mcp package"
+echo "  2. Set up a Python venv and install dependencies"
 echo "  3. Generate an SSH keypair at $SSH_KEY (if needed)"
-echo "  4. Ask you for VM details and build config.json"
+echo "  4. Launch the VM manager to configure your VMs"
 echo "  5. Install a launchd plist to sync every 5 minutes"
 echo "  6. Show how to configure Claude Desktop"
 echo ""
@@ -78,13 +78,13 @@ mkdir -p "$HOME/.ssh"
 # ── 2. Python venv ────────────────────────────────────────────────────
 echo ""
 echo "--- Python virtual environment ---"
-if [[ -d "$VENV_DIR" ]] && "$VENV_DIR/bin/python3" -c "import mcp" &>/dev/null; then
-    echo "  $VENV_DIR already exists with mcp package, skipping."
+if [[ -d "$VENV_DIR" ]] && "$VENV_DIR/bin/python3" -c "import mcp; import InquirerPy" &>/dev/null; then
+    echo "  $VENV_DIR already exists with required packages, skipping."
 else
     echo "  Creating venv at $VENV_DIR ..."
     python3 -m venv "$VENV_DIR"
-    "$VENV_DIR/bin/pip" install --quiet mcp
-    echo "  Installed mcp package into venv."
+    "$VENV_DIR/bin/pip" install --quiet mcp InquirerPy
+    echo "  Installed mcp and InquirerPy packages into venv."
 fi
 
 # ── 3. SSH keypair ─────────────────────────────────────────────────────
@@ -98,72 +98,20 @@ else
 fi
 echo ""
 
-# ── 3. Gather VM details interactively ─────────────────────────────────
+# ── 4. VM configuration via TUI ──────────────────────────────────────
 echo "--- VM configuration ---"
-echo "Enter details for each VM you want to sync memories from."
+echo "Launching VM manager..."
+echo ""
+"$VENV_DIR/bin/python3" "$SCRIPT_DIR/manage_vms.py" --config "$CONFIG_FILE"
 echo ""
 
-vms_json="[]"
-add_more="y"
+# ── 5. Install launchd plist (if VMs configured) ─────────────────────
+vm_count=$(jq '.vms | length' "$CONFIG_FILE")
+if (( vm_count > 0 )); then
+    echo "--- Installing launchd plist ---"
+    mkdir -p "$PLIST_DIR"
 
-while [[ "$add_more" =~ ^[Yy] ]]; do
-    read -rp "  VM name (e.g. dev-vm): " vm_name
-    read -rp "  Hostname or IP (e.g. dev-vm.local or 192.168.1.50): " vm_host
-    read -rp "  SSH username: " vm_user
-    echo "  Memory paths — these are the Claude project memory directories on the VM."
-    echo "  Example: ~/.claude/projects/-home-dav-src-myproject/memory"
-    read -rp "  Comma-separated memory paths: " vm_paths_raw
-
-    # Build JSON array of paths
-    IFS=',' read -ra path_arr <<< "$vm_paths_raw"
-    paths_json="[]"
-    for p in "${path_arr[@]}"; do
-        trimmed=$(echo "$p" | xargs)  # trim whitespace
-        paths_json=$(echo "$paths_json" | jq --arg p "$trimmed" '. + [$p]')
-    done
-
-    # Append this VM to the array
-    vms_json=$(echo "$vms_json" | jq \
-        --arg name "$vm_name" \
-        --arg host "$vm_host" \
-        --arg user "$vm_user" \
-        --arg key "~/.ssh/claude_memory_ed25519" \
-        --argjson paths "$paths_json" \
-        '. + [{name: $name, host: $host, user: $user, ssh_key: $key, memory_paths: $paths}]')
-
-    echo ""
-    read -rp "  Add another VM? (y/N): " add_more
-    add_more="${add_more:-n}"
-    echo ""
-done
-
-# ── 4. Write config.json ───────────────────────────────────────────────
-echo "--- Writing config.json ---"
-config_json=$(jq -n \
-    --argjson vms "$vms_json" \
-    '{vms: $vms, local_cache: "~/.claude-memories", sync_interval_minutes: 5}')
-
-if [[ -f "$CONFIG_FILE" ]]; then
-    echo "  $CONFIG_FILE already exists."
-    read -rp "  Overwrite? (y/N): " overwrite
-    if [[ ! "$overwrite" =~ ^[Yy] ]]; then
-        echo "  Keeping existing config.json."
-    else
-        echo "$config_json" > "$CONFIG_FILE"
-        chmod 600 "$CONFIG_FILE"
-        echo "  Wrote $CONFIG_FILE"
-    fi
-else
-    echo "$config_json" > "$CONFIG_FILE"
-    echo "  Wrote $CONFIG_FILE"
-fi
-echo ""
-
-# ── 5. Install launchd plist ───────────────────────────────────────────
-echo "--- Installing launchd plist ---"
-mkdir -p "$PLIST_DIR"
-
-cat > "$PLIST_PATH" <<PLIST
+    cat > "$PLIST_PATH" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -188,31 +136,23 @@ cat > "$PLIST_PATH" <<PLIST
 </plist>
 PLIST
 
-echo "  Wrote $PLIST_PATH"
-
-# Load (or reload) the plist
-if launchctl list "$PLIST_NAME" &>/dev/null; then
-    launchctl unload "$PLIST_PATH" 2>/dev/null || true
+    echo "  Wrote $PLIST_PATH"
+    if launchctl list "$PLIST_NAME" &>/dev/null; then
+        launchctl unload "$PLIST_PATH" 2>/dev/null || true
+    fi
+    launchctl load "$PLIST_PATH" 2>/dev/null && echo "  Loaded launchd job." || echo "  (Could not load plist — load it manually with: launchctl load \"$PLIST_PATH\")"
+    echo ""
+else
+    echo "--- Skipping launchd plist (no VMs configured) ---"
+    echo "  Run ./manage_vms.py to add VMs later."
+    echo "  The sync job will be installed when you add your first VM."
+    echo ""
 fi
-launchctl load "$PLIST_PATH" 2>/dev/null && echo "  Loaded launchd job." || echo "  (Could not load plist — load it manually with: launchctl load \"$PLIST_PATH\")"
-echo ""
 
 # ── 6. Claude Desktop instructions ────────────────────────────────────
 echo "========================================"
 echo "  Setup complete!"
 echo "========================================"
-echo ""
-echo "--- SSH key ---"
-echo "Copy the public key to each VM so sync.sh can connect:"
-echo ""
-
-vm_count=$(echo "$vms_json" | jq 'length')
-for (( i=0; i<vm_count; i++ )); do
-    vm_user=$(echo "$vms_json" | jq -r ".[$i].user")
-    vm_host=$(echo "$vms_json" | jq -r ".[$i].host")
-    echo "  ssh-copy-id -i $SSH_KEY ${vm_user}@${vm_host}"
-done
-
 echo ""
 echo "--- Claude Desktop configuration ---"
 echo "Add (or merge) the following into:"
@@ -229,20 +169,6 @@ cat <<EOF
 }
 EOF
 echo ""
-
-# ── 7. Offer to copy SSH key to VMs ───────────────────────────────────
+echo "To manage VMs later, run: ./manage_vms.py"
+echo "Sync log: $SYNC_LOG"
 echo ""
-read -rp "Would you like to copy the SSH key to your VMs now? (y/N): " copy_keys
-if [[ "$copy_keys" =~ ^[Yy] ]]; then
-    for (( i=0; i<vm_count; i++ )); do
-        vm_user=$(echo "$vms_json" | jq -r ".[$i].user")
-        vm_host=$(echo "$vms_json" | jq -r ".[$i].host")
-        vm_name=$(echo "$vms_json" | jq -r ".[$i].name")
-        echo ""
-        echo "  Copying key to ${vm_name} (${vm_user}@${vm_host})..."
-        ssh-copy-id -i "$SSH_KEY" "${vm_user}@${vm_host}" || echo "  Failed to copy key to ${vm_name}. You can do it manually later."
-    done
-fi
-
-echo ""
-echo "Done! Sync will run every 5 minutes. Check $SYNC_LOG for output."
