@@ -22,7 +22,7 @@ Give Claude Desktop read-only access to Claude Code memory files stored on VMs a
 │                          └── last-sync.json      │
 │                                 ▲                │
 │                                 │                │
-│                          rsync cron (5 min)      │
+│                          rsync (hourly + on-demand) │
 │                                 │                │
 └─────────────────────────────────┼────────────────┘
                                   │ SSH
@@ -32,7 +32,7 @@ Give Claude Desktop read-only access to Claude Code memory files stored on VMs a
           ~/.claude/projects/  (same)        (same)
 ```
 
-A sync script (`sync.sh`) rsyncs memory files from your VMs to a local cache via SSH every 5 minutes. An MCP server (`server.py`) exposes that cache to Claude Desktop via stdio.
+A sync script (`sync.sh`) rsyncs memory files from your VMs to a local cache via SSH every hour. An MCP server (`server.py`) exposes that cache to Claude Desktop via stdio. Sync can also be triggered on-demand via the `sync_now` MCP tool.
 
 ## Quick Start
 
@@ -45,7 +45,7 @@ cd claude-memory-mcp
 ./install.sh
 # - Asks for VM hostnames/usernames
 # - Generates SSH key
-# - Installs launchd sync job (every 5 min)
+# - Installs launchd sync job (every hour)
 # - Automatically adds MCP server entry to Claude Desktop config
 
 # 3. Copy the SSH public key to each VM
@@ -66,6 +66,7 @@ ssh-copy-id -i ~/.ssh/claude_memory_ed25519.pub user@your-vm.local
 | `read_memories` | Returns the MEMORY.md index and all referenced memory file contents for a project |
 | `search_memories` | Full-text search across all memory files from all projects |
 | `sync_status` | Shows which VMs were reachable and when each was last synced |
+| `sync_now` | Trigger an immediate memory sync from all VMs |
 | `memory_sync_health` | Full health check: launchd job status, per-VM sync age, and any recent errors from the sync log |
 
 ## Configuration
@@ -140,5 +141,5 @@ pip3 install -r requirements.txt
 ## Limitations
 
 - **Read-only**: The MCP server cannot write or update memory files on VMs (by design for v1).
-- **5-minute sync delay**: Changes made on a VM will not appear in Claude Desktop until the next sync cycle.
+- **Hourly sync**: Changes made on a VM will not appear in Claude Desktop until the next sync cycle. Use `sync_now` to pull immediately.
 - **VMs must be SSH-reachable**: If a VM is off or unreachable, the last synced cache is used. Stale data is served with its timestamp so Claude knows how fresh it is.

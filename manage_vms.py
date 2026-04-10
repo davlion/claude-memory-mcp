@@ -16,7 +16,7 @@ SSH_KEY = Path.home() / ".ssh" / "claude_memory_ed25519"
 DEFAULT_CONFIG = {
     "vms": [],
     "local_cache": "~/.claude-memories",
-    "sync_interval_minutes": 5,
+    "sync_interval_minutes": 60,
 }
 
 
@@ -271,7 +271,7 @@ def _offer_launchd_install() -> None:
     plist_path = plist_dir / f"{plist_name}.plist"
     sync_log = Path.home() / ".claude-memories" / "sync.log"
 
-    install = inquirer.confirm(message="Install launchd sync job (every 5 min)?", default=True).execute()
+    install = inquirer.confirm(message="Install launchd sync job (every hour)?", default=True).execute()
     if not install:
         return
 
@@ -289,7 +289,7 @@ def _offer_launchd_install() -> None:
         <string>{script_dir / "sync.sh"}</string>
     </array>
     <key>StartInterval</key>
-    <integer>300</integer>
+    <integer>3600</integer>
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>

@@ -23,7 +23,7 @@ cat ~/.claude-memories/last-sync.json | jq .
 ```
 - `last_sync`: timestamp of last attempt (UTC)
 - `success: true/false`: whether rsync succeeded
-- Stale if `last_sync` is >15 min ago
+- Stale if `last_sync` is >90 min ago
 
 **3. Check sync.log for errors:**
 ```bash
@@ -39,7 +39,7 @@ tail -50 ~/.claude-memories/sync.log
 |---------|-------------|
 | log empty | Job never ran; check `launchctl list` |
 | `success: false` in last-sync.json | rsync/SSH failure; check log for ERROR line |
-| last_sync >15 min ago | Job not loaded or VM unreachable |
+| last_sync >90 min ago | Job not loaded or VM unreachable |
 | job not in `launchctl list` | Reinstall via manage_vms.py → Install launchd sync job |
 
 ## Reinstall Job

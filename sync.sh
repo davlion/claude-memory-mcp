@@ -1,6 +1,6 @@
 #!/bin/bash
 # Sync Claude Code memory files from VMs to local cache.
-# Runs via launchd every 5 minutes on Mac.
+# Runs via launchd every hour on Mac (also triggered on-demand).
 
 CONFIG="${HOME}/.claude-memories/config.json"
 if [[ ! -f "$CONFIG" ]]; then

@@ -57,7 +57,7 @@ echo "  1. Create $MEMORY_DIR directory"
 echo "  2. Set up a Python venv and install dependencies"
 echo "  3. Generate an SSH keypair at $SSH_KEY (if needed)"
 echo "  4. Launch the VM manager to configure your VMs"
-echo "  5. Install a launchd plist to sync every 5 minutes"
+echo "  5. Install a launchd plist to sync every hour"
 echo "  6. Show how to configure Claude Desktop"
 echo ""
 read -rp "Press Enter to continue (Ctrl-C to abort)..."
@@ -125,7 +125,7 @@ if (( vm_count > 0 )); then
         <string>${SCRIPT_DIR}/sync.sh</string>
     </array>
     <key>StartInterval</key>
-    <integer>300</integer>
+    <integer>3600</integer>
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>

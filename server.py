@@ -145,6 +145,27 @@ def sync_status() -> str:
 
 
 @mcp.tool()
+def sync_now() -> str:
+    """Trigger an immediate memory sync from all VMs."""
+    sync_sh = Path(__file__).parent / "sync.sh"
+    if not sync_sh.exists():
+        return json.dumps({"error": f"sync.sh not found at {sync_sh}"})
+    try:
+        proc = subprocess.run(
+            ["/bin/bash", str(sync_sh)],
+            capture_output=True, text=True, timeout=60
+        )
+        return json.dumps({
+            "success": proc.returncode == 0,
+            "output": (proc.stdout + proc.stderr).strip() or "(no output)",
+        })
+    except subprocess.TimeoutExpired:
+        return json.dumps({"error": "sync timed out after 60s"})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
 def memory_sync_health() -> str:
     """Check whether the memory sync job is healthy: launchd status, per-VM sync age, and recent log errors."""
     cache = _cache_dir()
@@ -189,7 +210,7 @@ def memory_sync_health() -> str:
             "last_sync": last_sync,
             "age_minutes": age_minutes,
             "success": info.get("success", False),
-            "stale": age_minutes is not None and age_minutes > 15,
+            "stale": age_minutes is not None and age_minutes > 90,
         })
     result["vms"] = vms
 
