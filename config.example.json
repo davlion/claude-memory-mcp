@@ -20,6 +20,5 @@
       ]
     }
   ],
-  "local_cache": "~/.claude-memories",
-  "sync_interval_minutes": 5
+  "local_cache": "~/.claude-memories"
 }
