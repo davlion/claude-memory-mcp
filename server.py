@@ -36,6 +36,36 @@ def _iter_projects(cache: Path):
                 yield vm_dir.name, proj_dir, name
 
 
+def _short_name(name: str) -> str:
+    """Return a human-friendly project name by stripping leading path components.
+
+    'Users-dav-src-bakers-game-annotator' -> 'bakers-game-annotator'
+    'Volumes-My-Shared-Files-underwater-pickleball' -> 'underwater-pickleball'
+    """
+    parts = name.split("-")
+    # Skip the root prefix (Users/Volumes/home) and the next component (username/volume)
+    for prefix in ("Users", "Volumes", "home"):
+        if parts and parts[0] == prefix:
+            parts = parts[2:]  # drop prefix + username/volume
+            break
+    # Skip optional intermediate directory (src, alpha, work, projects, code)
+    if parts and parts[0] in ("src", "alpha", "work", "projects", "code"):
+        parts = parts[1:]
+    return "-".join(parts) if parts else name
+
+
+def _find_project(cache: Path, query: str):
+    """Return (vm, proj_dir, proj_name) for query, using exact then suffix match."""
+    exact = suffix = None
+    for vm, proj_dir, proj_name in _iter_projects(cache):
+        if proj_name == query:
+            exact = (vm, proj_dir, proj_name)
+            break
+        if proj_name.endswith(query) and suffix is None:
+            suffix = (vm, proj_dir, proj_name)
+    return exact or suffix
+
+
 def _read_sync_data(cache: Path) -> dict:
     """Read last-sync.json, returning {} on any error."""
     path = cache / "last-sync.json"
@@ -61,7 +91,7 @@ def list_projects() -> str:
         last_sync = sync_data.get(vm, {}).get("last_sync", "unknown")
         results.append({
             "vm": vm,
-            "project": proj_name,
+            "project": _short_name(proj_name),
             "last_sync": last_sync,
             "memory_count": count,
         })
@@ -74,23 +104,24 @@ def read_memories(project: str) -> str:
     cache = _cache_dir()
     if not cache.exists():
         return json.dumps({"error": "Cache directory not found"})
-    for vm, proj_dir, proj_name in _iter_projects(cache):
-        if proj_name == project:
-            mem_dir = proj_dir / "memory"
-            if not mem_dir.is_dir():
-                return json.dumps({"project": project, "vm": vm, "index": "", "memories": []})
-            index_path = mem_dir / "MEMORY.md"
-            index = index_path.read_text(encoding="utf-8") if index_path.exists() else ""
-            memories = []
-            for f in sorted(mem_dir.glob("*.md")):
-                if f.name == "MEMORY.md":
-                    continue
-                try:
-                    memories.append({"file": f.name, "content": f.read_text(encoding="utf-8")})
-                except OSError:
-                    memories.append({"file": f.name, "content": "[read error]"})
-            return json.dumps({"project": project, "vm": vm, "index": index, "memories": memories}, indent=2)
-    return json.dumps({"error": f"Project '{project}' not found"})
+    match = _find_project(cache, project)
+    if not match:
+        return json.dumps({"error": f"Project '{project}' not found"})
+    vm, proj_dir, proj_name = match
+    mem_dir = proj_dir / "memory"
+    if not mem_dir.is_dir():
+        return json.dumps({"project": proj_name, "vm": vm, "index": "", "memories": []})
+    index_path = mem_dir / "MEMORY.md"
+    index = index_path.read_text(encoding="utf-8") if index_path.exists() else ""
+    memories = []
+    for f in sorted(mem_dir.glob("*.md")):
+        if f.name == "MEMORY.md":
+            continue
+        try:
+            memories.append({"file": f.name, "content": f.read_text(encoding="utf-8")})
+        except OSError:
+            memories.append({"file": f.name, "content": "[read error]"})
+    return json.dumps({"project": proj_name, "vm": vm, "index": index, "memories": memories}, indent=2)
 
 
 @mcp.tool()
@@ -227,6 +258,66 @@ def memory_sync_health() -> str:
         result["log_missing"] = True
 
     return json.dumps(result, indent=2)
+
+
+@mcp.resource("memory://index")
+def all_projects_index() -> str:
+    """Summary stubs for all synced projects — one MEMORY.md index per project.
+
+    Exposed as an MCP resource so clients (e.g. Claude Desktop) can embed memory
+    context directly into conversations without an explicit tool call.
+    """
+    cache = _cache_dir()
+    if not cache.exists():
+        return "No memory cache found. Use the sync_now tool to sync from VMs."
+    sync_data = _read_sync_data(cache)
+    sections = []
+    for vm, proj_dir, proj_name in _iter_projects(cache):
+        mem_dir = proj_dir / "memory"
+        index_path = mem_dir / "MEMORY.md"
+        last_sync = sync_data.get(vm, {}).get("last_sync", "unknown")
+        non_index = [f for f in mem_dir.glob("*.md") if f.name != "MEMORY.md"] if mem_dir.is_dir() else []
+        header = f"## {proj_name}  (VM: {vm} · synced: {last_sync} · {len(non_index)} memory files)"
+        if index_path.exists():
+            try:
+                body = index_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                body = "(index unreadable)"
+        else:
+            body = "(no MEMORY.md index)"
+        sections.append(f"{header}\n\n{body}")
+    return "\n\n---\n\n".join(sections) if sections else "No projects synced yet."
+
+
+@mcp.resource("memory://project/{name}")
+def project_memory_resource(name: str) -> str:
+    """Full memory content for a named project (MEMORY.md index + all memory files).
+
+    URI example: memory://project/myapp
+    """
+    cache = _cache_dir()
+    if not cache.exists():
+        return f"Cache not found — project '{name}' unavailable."
+    match = _find_project(cache, name)
+    if not match:
+        return f"Project '{name}' not found in cache."
+    _, proj_dir, proj_name = match
+    mem_dir = proj_dir / "memory"
+    if not mem_dir.is_dir():
+        return f"No memory directory for project '{proj_name}'."
+    parts = []
+    for f in sorted(mem_dir.glob("*.md")):
+        try:
+            parts.append(f"### {f.name}\n\n{f.read_text(encoding='utf-8').strip()}")
+        except OSError:
+            parts.append(f"### {f.name}\n\n(read error)")
+    return "\n\n---\n\n".join(parts) if parts else f"No memory files for '{proj_name}'."
+
+
+@mcp.prompt()
+def load_memories(project: str) -> str:
+    """Load all memory files for a specific project into the conversation context."""
+    return project_memory_resource(project)
 
 
 if __name__ == "__main__":

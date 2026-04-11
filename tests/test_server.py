@@ -218,10 +218,85 @@ class TestSyncStatus:
         assert result == []
 
 
-# ── Helper: import tool functions at module level ──────────────────────────
+# ── all_projects_index resource ────────────────────────────────────────────
+
+
+class TestAllProjectsIndex:
+    def test_no_cache(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(server, "_cache_dir", lambda: tmp_path / "nonexistent")
+        result = all_projects_index()
+        assert "No memory cache" in result
+
+    def test_empty_cache(self, cache_dir):
+        result = all_projects_index()
+        assert "No projects" in result
+
+    def test_contains_all_projects(self, populated_cache):
+        result = all_projects_index()
+        assert "myapp" in result
+        assert "utils" in result
+        assert "webapp" in result
+
+    def test_contains_index_content(self, populated_cache):
+        result = all_projects_index()
+        assert "MyApp Memory Index" in result
+        assert "Webapp Index" in result
+
+    def test_contains_vm_and_sync_metadata(self, populated_cache):
+        result = all_projects_index()
+        assert "dev-vm" in result
+        assert "staging-vm" in result
+        assert "2026-04-09T10:00:00Z" in result
+
+    def test_separated_by_divider(self, populated_cache):
+        result = all_projects_index()
+        assert "---" in result
+
+    def test_no_index_file(self, cache_dir):
+        mem = cache_dir / "vm1" / "-bare" / "memory"
+        mem.mkdir(parents=True)
+        result = all_projects_index()
+        assert "bare" in result
+        assert "no MEMORY.md index" in result
+
+
+# ── project_memory_resource resource ───────────────────────────────────────
+
+
+class TestProjectMemoryResource:
+    def test_reads_all_files(self, populated_cache):
+        result = project_memory_resource("myapp")
+        assert "MEMORY.md" in result
+        assert "architecture.md" in result
+        assert "decisions.md" in result
+        assert "MyApp Memory Index" in result
+        assert "microservices" in result
+
+    def test_project_not_found(self, populated_cache):
+        result = project_memory_resource("nonexistent")
+        assert "not found" in result
+
+    def test_no_memory_dir(self, cache_dir):
+        (cache_dir / "vm1" / "-bare").mkdir(parents=True)
+        result = project_memory_resource("bare")
+        assert "No memory directory" in result
+
+    def test_no_cache(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(server, "_cache_dir", lambda: tmp_path / "gone")
+        result = project_memory_resource("anything")
+        assert "unavailable" in result
+
+    def test_separated_by_divider(self, populated_cache):
+        result = project_memory_resource("myapp")
+        assert "---" in result
+
+
+# ── Helper: import tool and resource functions at module level ─────────────
 
 # The MCP decorator wraps the functions, but we can still call them directly.
 list_projects = server.list_projects
 read_memories = server.read_memories
 search_memories = server.search_memories
 sync_status = server.sync_status
+all_projects_index = server.all_projects_index
+project_memory_resource = server.project_memory_resource

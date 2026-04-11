@@ -35,6 +35,17 @@ for (( i=0; i<vm_count; i++ )); do
     user=$(jq -r ".vms[$i].user" "$CONFIG")
     key=$(jq -r ".vms[$i].ssh_key" "$CONFIG" | sed "s|~|$HOME|")
     ssh_opts="-i $key -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+
+    # Skip unreachable remote hosts silently (localhost always passes)
+    if [[ "$host" != "localhost" && "$host" != "127.0.0.1" ]]; then
+        if ! nc -z -w2 "$host" 22 &>/dev/null; then
+            echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] SKIP: $name ($host) unreachable"
+            sync_data=$(echo "$sync_data" | jq \
+                --arg vm "$name" \
+                'if .[$vm] then . else .[$vm] = {"last_sync": "never", "success": false} end')
+            continue
+        fi
+    fi
     success=true
 
     path_count=$(jq ".vms[$i].memory_paths | length" "$CONFIG")
@@ -45,9 +56,13 @@ for (( i=0; i<vm_count; i++ )); do
         dest="$LOCAL_CACHE/$name/$project/memory/"
         mkdir -p "$dest"
 
-        if ! rsync -az --delete --timeout=5 \
-            -e "ssh $ssh_opts" \
-            "$user@$host:$mem_path/" "$dest" 2>&1; then
+        if [[ "$host" == "localhost" || "$host" == "127.0.0.1" ]]; then
+            rsync_src="${mem_path/#\~/$HOME}/"
+            rsync_cmd=(rsync -az --delete "$rsync_src" "$dest")
+        else
+            rsync_cmd=(rsync -az --delete --timeout=5 -e "ssh $ssh_opts" "$user@$host:$mem_path/" "$dest")
+        fi
+        if ! "${rsync_cmd[@]}" 2>&1; then
             echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] ERROR: rsync failed for $name:$mem_path" >&2
             success=false
         fi
