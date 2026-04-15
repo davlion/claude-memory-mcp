@@ -351,7 +351,7 @@ def sync_now() -> str:
             capture_output=True, text=True, timeout=60
         )
         cache = _cache_dir()
-        config_path = CACHE_DIR / "config.json"
+        config_path = cache / "config.json"
         try:
             config = json.loads(config_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):

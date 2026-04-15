@@ -772,8 +772,7 @@ class TestSyncNowPendingShares:
             return m
 
         with patch("subprocess.run", side_effect=fake_run):
-            with patch("pathlib.Path.exists", return_value=False):
-                result = json.loads(sync_now())
+            result = json.loads(sync_now())
 
         assert result.get("pending_shares", []) == []
 
