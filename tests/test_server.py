@@ -462,8 +462,8 @@ class TestShareMemory:
         assert any("myapp" in dest and status == "skipped"
                    for dest, status in statuses.items())
 
-    def test_unreachable_vm_skipped(self, share_with_config):
-        """Non-localhost VM that fails nc check is recorded as skipped:unreachable."""
+    def test_unreachable_vm_queued(self, share_with_config):
+        """Non-localhost VM that fails nc check is queued for retry on next sync."""
         def fake_run(cmd, **kwargs):
             m = MagicMock()
             m.returncode = 1 if cmd[0] == "nc" else 0
@@ -479,8 +479,8 @@ class TestShareMemory:
 
         assert len(result) == 1
         assert result[0]["vm"] == "remote-vm"
-        assert result[0]["status"] == "skipped"
-        assert result[0]["reason"] == "unreachable"
+        assert result[0]["status"] == "queued"
+        assert "unreachable" in result[0]["reason"]
 
     def test_localhost_skips_nc_check(self, share_with_config):
         """localhost is attempted without nc reachability check."""

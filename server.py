@@ -78,6 +78,150 @@ def _read_sync_data(cache: Path) -> dict:
     return {}
 
 
+def _read_pending_shares(cache: Path) -> list:
+    """Read pending-shares.json, returning [] on missing or corrupt."""
+    path = cache / "pending-shares.json"
+    if not path.exists():
+        return []
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def _write_pending_shares(cache: Path, entries: list) -> None:
+    """Write pending-shares.json, or delete it if entries is empty."""
+    path = cache / "pending-shares.json"
+    if not entries:
+        path.unlink(missing_ok=True)
+    else:
+        path.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
+
+
+def _process_pending_shares(cache: Path, config: dict) -> list:
+    """Process pending-shares queue: push entries for now-reachable VMs.
+
+    Returns list of result dicts (one per entry attempted).
+    Removes successfully pushed entries from the queue.
+    """
+    entries = _read_pending_shares(cache)
+    if not entries:
+        return []
+
+    all_vms = {vm["name"]: vm for vm in config.get("vms", [])}
+    results = []
+    remaining = []
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False,
+                                     encoding="utf-8") as tf:
+        tmp_file = tf.name
+
+    try:
+        for entry in entries:
+            vm_name = entry["target_vm"]
+            mem_path = entry["memory_path"]
+            file = entry["file"]
+            content = entry["content"]
+            overwrite = entry.get("overwrite", False)
+
+            vm_config = all_vms.get(vm_name)
+            if vm_config is None:
+                # VM removed from config — discard entry
+                results.append({
+                    "target_vm": vm_name, "memory_path": mem_path, "file": file,
+                    "status": "discarded", "reason": "VM no longer in config",
+                })
+                continue
+
+            host = vm_config["host"]
+            user = vm_config["user"]
+
+            # Reachability check
+            try:
+                nc = subprocess.run(
+                    ["nc", "-z", "-w2", host, "22"],
+                    capture_output=True,
+                )
+                reachable = nc.returncode == 0
+            except subprocess.TimeoutExpired:
+                reachable = False
+
+            if not reachable:
+                remaining.append(entry)
+                results.append({
+                    "target_vm": vm_name, "memory_path": mem_path, "file": file,
+                    "status": "still_unreachable",
+                })
+                continue
+
+            # Write content to temp file
+            Path(tmp_file).write_text(content, encoding="utf-8")
+
+            dest_file = f"{mem_path.rstrip('/')}/{file}"
+            remote_dest = dest_file.replace("~", "$HOME")
+
+            # Existence check
+            try:
+                check = subprocess.run(
+                    ["ssh"] + _ssh_opts(vm_config)
+                    + [f"{user}@{host}",
+                       f'test -f "{remote_dest}" && cat "{remote_dest}" '
+                       f'|| echo __NOT_FOUND__'],
+                    capture_output=True, text=True, timeout=10,
+                )
+                file_exists = "__NOT_FOUND__" not in check.stdout
+            except subprocess.TimeoutExpired:
+                remaining.append(entry)
+                results.append({
+                    "target_vm": vm_name, "memory_path": mem_path, "file": file,
+                    "status": "error", "error": "timed out during existence check",
+                })
+                continue
+
+            if file_exists and not overwrite:
+                remaining.append(entry)
+                results.append({
+                    "target_vm": vm_name, "memory_path": mem_path, "file": file,
+                    "status": "skipped", "reason": "exists (overwrite=False)",
+                })
+                continue
+
+            # Push
+            ssh_e = "ssh " + " ".join(_ssh_opts(vm_config))
+            rsync_cmd = [
+                "rsync", "-az", "--timeout=5",
+                "-e", ssh_e,
+                tmp_file,
+                f"{user}@{host}:{dest_file}",
+            ]
+            try:
+                proc = subprocess.run(rsync_cmd, capture_output=True, text=True, timeout=30)
+            except subprocess.TimeoutExpired:
+                remaining.append(entry)
+                results.append({
+                    "target_vm": vm_name, "memory_path": mem_path, "file": file,
+                    "status": "error", "error": "timed out during rsync",
+                })
+                continue
+
+            if proc.returncode == 0:
+                results.append({
+                    "target_vm": vm_name, "memory_path": mem_path, "file": file,
+                    "status": "pushed",
+                })
+            else:
+                remaining.append(entry)
+                results.append({
+                    "target_vm": vm_name, "memory_path": mem_path, "file": file,
+                    "status": "error", "error": (proc.stdout + proc.stderr).strip(),
+                })
+    finally:
+        Path(tmp_file).unlink(missing_ok=True)
+
+    _write_pending_shares(cache, remaining)
+    return results
+
+
 def _proj_name_from_path(mem_path: str) -> str:
     """Extract the project name from a memory_path config entry.
 
@@ -206,9 +350,19 @@ def sync_now() -> str:
             ["/bin/bash", str(sync_sh)],
             capture_output=True, text=True, timeout=60
         )
+        cache = _cache_dir()
+        config_path = CACHE_DIR / "config.json"
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            config = {}
+
+        pending_results = _process_pending_shares(cache, config)
+
         return json.dumps({
             "success": proc.returncode == 0,
             "output": (proc.stdout + proc.stderr).strip() or "(no output)",
+            "pending_shares": pending_results,
         })
     except subprocess.TimeoutExpired:
         return json.dumps({"error": "sync timed out after 60s"})
@@ -347,23 +501,8 @@ def share_memory(
             user = vm_config["user"]
             is_local = host in ("localhost", "127.0.0.1")
 
-            # Reachability check (non-localhost only)
-            if not is_local:
-                try:
-                    nc = subprocess.run(
-                        ["nc", "-z", "-w2", host, "22"],
-                        capture_output=True,
-                    )
-                except subprocess.TimeoutExpired:
-                    results.append({"vm": vm_name, "status": "skipped", "reason": "unreachable"})
-                    continue
-                if nc.returncode != 0:
-                    results.append({"vm": vm_name, "status": "skipped", "reason": "unreachable"})
-                    continue
-
+            # Calculate targets (needed whether reachable or not, for queueing)
             memory_paths = vm_config.get("memory_paths", [])
-
-            # Targeted vs broadcast
             if broadcast:
                 targets = memory_paths
             else:
@@ -376,6 +515,40 @@ def share_memory(
                         "status": "skipped",
                         "reason": "project not on this VM",
                     })
+                    continue
+
+            # Reachability check (non-localhost only)
+            if not is_local:
+                try:
+                    nc = subprocess.run(
+                        ["nc", "-z", "-w2", host, "22"],
+                        capture_output=True,
+                    )
+                    reachable = nc.returncode == 0
+                except subprocess.TimeoutExpired:
+                    reachable = False
+
+                if not reachable:
+                    # Queue each target path for retry on next sync
+                    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    pending = _read_pending_shares(cache)
+                    for mem_path in targets:
+                        pending.append({
+                            "queued_at": ts,
+                            "file": file,
+                            "content": source_content,
+                            "target_vm": vm_name,
+                            "memory_path": mem_path,
+                            "overwrite": overwrite,
+                        })
+                        results.append({
+                            "vm": vm_name,
+                            "project": Path(mem_path).parent.name.lstrip("-"),
+                            "dest": f"{mem_path.rstrip('/')}/{file}",
+                            "status": "queued",
+                            "reason": "unreachable — added to pending-shares queue",
+                        })
+                    _write_pending_shares(cache, pending)
                     continue
 
             for mem_path in targets:
