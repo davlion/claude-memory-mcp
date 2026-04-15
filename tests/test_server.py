@@ -653,7 +653,4 @@ search_memories = server.search_memories
 sync_status = server.sync_status
 all_projects_index = server.all_projects_index
 project_memory_resource = server.project_memory_resource
-try:
-    share_memory = server.share_memory
-except AttributeError:
-    share_memory = None  # will be implemented in Task 6
+share_memory = server.share_memory
