@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -351,6 +352,296 @@ class TestProjectMemoryResource:
     def test_separated_by_divider(self, populated_cache):
         result = project_memory_resource("myapp")
         assert "---" in result
+
+
+# ── share_memory ───────────────────────────────────────────────────────────
+
+
+class TestShareMemory:
+    def test_memory_md_guard(self, share_with_config):
+        result = json.loads(share_memory("MEMORY.md", "myapp"))
+        assert "error" in result
+        assert "index file" in result["error"]
+
+    def test_source_project_not_found(self, share_with_config):
+        with patch("subprocess.run") as mock_run:
+            result = json.loads(share_memory("feedback_debugging.md", "nonexistent"))
+        assert "error" in result
+        assert "not found" in result["error"]
+
+    def test_source_file_not_found(self, share_with_config):
+        with patch("subprocess.run") as mock_run:
+            result = json.loads(share_memory("nosuchfile.md", "myapp"))
+        assert "error" in result
+        assert "not found" in result["error"]
+
+    def test_content_override_used_instead_of_cached_file(self, share_with_config):
+        """When content= is provided, that content is pushed (cached file ignored)."""
+        pushed_content = []
+
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 0
+            m.stdout = "__NOT_FOUND__\n"
+            m.stderr = ""
+            if cmd[0] == "rsync":
+                # Capture the temp file content that rsync would push
+                src = cmd[-2]  # rsync src path
+                try:
+                    pushed_content.append(Path(src).read_text(encoding="utf-8"))
+                except OSError:
+                    pass
+            return m
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = json.loads(share_memory(
+                "feedback_debugging.md", "myapp",
+                target_vms=["remote-vm"],
+                content="CUSTOM CONTENT"
+            ))
+
+        assert any(r["status"] == "pushed" for r in result)
+        assert pushed_content and pushed_content[0] == "CUSTOM CONTENT"
+
+    def test_target_vms_narrows_scope(self, share_with_config):
+        """Only VMs in target_vms are attempted."""
+        attempted_vms = []
+
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 0
+            m.stdout = "__NOT_FOUND__\n"
+            m.stderr = ""
+            if "192.168.1.100" in str(cmd):
+                attempted_vms.append("remote-vm")
+            return m
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = json.loads(share_memory(
+                "feedback_debugging.md", "myapp",
+                target_vms=["remote-vm"]
+            ))
+
+        vms_in_result = {r["vm"] for r in result if "vm" in r}
+        assert vms_in_result == {"remote-vm"}
+
+    def test_src_dest_same_vm_and_project_skipped(self, share_with_config):
+        """Pushing a file to the same vm+project it came from is skipped with clear message."""
+        with patch("subprocess.run") as mock_run:
+            result = json.loads(share_memory(
+                "feedback_debugging.md", "myapp",
+                target_vms=["local"]
+            ))
+
+        # local/myapp is the source — targeted push back to it should be skipped
+        assert len(result) == 1
+        assert result[0]["status"] == "skipped"
+        assert "same file" in result[0]["reason"]
+
+    def test_broadcast_skips_src_but_pushes_others(self, share_with_config):
+        """In broadcast mode, src project is skipped but other projects on same VM proceed."""
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 0
+            m.stdout = "__NOT_FOUND__\n"
+            m.stderr = ""
+            return m
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = json.loads(share_memory(
+                "feedback_debugging.md", "myapp",
+                target_vms=["local"],
+                broadcast=True
+            ))
+
+        statuses = {r.get("dest", ""): r["status"] for r in result}
+        # otherapp on local should be pushed
+        assert any("otherapp" in dest and status == "pushed"
+                   for dest, status in statuses.items())
+        # myapp on local should be skipped (src==dest)
+        assert any("myapp" in dest and status == "skipped"
+                   for dest, status in statuses.items())
+
+    def test_unreachable_vm_skipped(self, share_with_config):
+        """Non-localhost VM that fails nc check is recorded as skipped:unreachable."""
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 1 if cmd[0] == "nc" else 0
+            m.stdout = ""
+            m.stderr = ""
+            return m
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = json.loads(share_memory(
+                "feedback_debugging.md", "myapp",
+                target_vms=["remote-vm"]
+            ))
+
+        assert len(result) == 1
+        assert result[0]["vm"] == "remote-vm"
+        assert result[0]["status"] == "skipped"
+        assert result[0]["reason"] == "unreachable"
+
+    def test_localhost_skips_nc_check(self, share_with_config):
+        """localhost is attempted without nc reachability check."""
+        nc_called = []
+
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 0
+            m.stdout = "__NOT_FOUND__\n"
+            m.stderr = ""
+            if cmd[0] == "nc":
+                nc_called.append(True)
+            return m
+
+        with patch("subprocess.run", side_effect=fake_run):
+            share_memory("feedback_debugging.md", "myapp",
+                         target_vms=["local"], broadcast=True)
+
+        assert not nc_called
+
+    def test_no_matching_project_on_vm_without_project(self, share_with_config, tmp_path, monkeypatch):
+        """Targeted mode skips VM when no memory_path matches source_project."""
+        config_no_match = {
+            "local_cache": str(tmp_path),
+            "vms": [
+                {
+                    "name": "no-myapp-vm",
+                    "host": "192.168.1.200",
+                    "user": "testuser",
+                    "ssh_key": "~/.ssh/claude_memory_ed25519",
+                    "memory_paths": [
+                        "~/.claude/projects/-Users-dav-src-unrelated/memory",
+                    ],
+                }
+            ],
+        }
+        (tmp_path / "config.json").write_text(json.dumps(config_no_match), encoding="utf-8")
+
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 0  # reachable
+            m.stdout = ""
+            m.stderr = ""
+            return m
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = json.loads(share_memory("feedback_debugging.md", "myapp"))
+
+        assert len(result) == 1
+        assert result[0]["status"] == "skipped"
+        assert "project not on this VM" in result[0]["reason"]
+
+    def test_file_absent_on_dest_is_pushed(self, share_with_config):
+        """File that doesn't exist on destination is rsynced successfully."""
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 0
+            m.stdout = "__NOT_FOUND__\n"
+            m.stderr = ""
+            return m
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = json.loads(share_memory(
+                "feedback_debugging.md", "myapp",
+                target_vms=["remote-vm"]
+            ))
+
+        assert any(r["status"] == "pushed" for r in result)
+
+    def test_file_exists_overwrite_false_skips_with_content(self, share_with_config):
+        """When file exists on dest and overwrite=False, skip and return existing content."""
+        existing = "---\nname: old\n---\nOld content.\n"
+
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 0
+            m.stdout = existing
+            m.stderr = ""
+            return m
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = json.loads(share_memory(
+                "feedback_debugging.md", "myapp",
+                target_vms=["remote-vm"]
+            ))
+
+        skipped = [r for r in result if r.get("status") == "skipped" and r.get("reason") == "exists"]
+        assert len(skipped) == 1
+        assert skipped[0]["existing_content"] == existing
+
+    def test_file_exists_overwrite_true_pushes(self, share_with_config):
+        """When file exists on dest and overwrite=True, rsync proceeds."""
+        existing = "---\nname: old\n---\nOld content.\n"
+        rsync_called = []
+
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 0
+            m.stdout = existing
+            m.stderr = ""
+            if cmd[0] == "rsync":
+                rsync_called.append(True)
+            return m
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = json.loads(share_memory(
+                "feedback_debugging.md", "myapp",
+                target_vms=["remote-vm"],
+                overwrite=True
+            ))
+
+        assert rsync_called
+        assert any(r["status"] == "pushed" for r in result)
+
+    def test_rsync_failure_recorded_as_error(self, share_with_config):
+        """When rsync exits non-zero, record status=error with message."""
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            if cmd[0] == "rsync":
+                m.returncode = 11
+                m.stdout = ""
+                m.stderr = "rsync: connection unexpectedly closed"
+            else:
+                m.returncode = 0
+                m.stdout = "__NOT_FOUND__\n"
+                m.stderr = ""
+            return m
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = json.loads(share_memory(
+                "feedback_debugging.md", "myapp",
+                target_vms=["remote-vm"]
+            ))
+
+        errors = [r for r in result if r.get("status") == "error"]
+        assert len(errors) == 1
+        assert "rsync" in errors[0]["error"]
+
+    def test_result_shape(self, share_with_config):
+        """Each result entry has required fields."""
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 0
+            m.stdout = "__NOT_FOUND__\n"
+            m.stderr = ""
+            return m
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = json.loads(share_memory(
+                "feedback_debugging.md", "myapp",
+                target_vms=["remote-vm"]
+            ))
+
+        assert len(result) > 0
+        for entry in result:
+            assert "vm" in entry
+            assert "status" in entry
+            pushed = [r for r in result if r["status"] == "pushed"]
+            for r in pushed:
+                assert "project" in r
+                assert "dest" in r
 
 
 # ── Helper: import tool and resource functions at module level ─────────────
