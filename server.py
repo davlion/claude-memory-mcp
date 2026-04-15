@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -258,6 +259,206 @@ def memory_sync_health() -> str:
         result["log_missing"] = True
 
     return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+def share_memory(
+    file: str,
+    source_project: str,
+    broadcast: bool = False,
+    target_vms: list[str] | None = None,
+    content: str | None = None,
+    overwrite: bool = False,
+) -> str:
+    """Push a memory file from one project to other VMs and/or projects on-demand.
+
+    Args:
+        file: Memory filename to push, e.g. 'feedback_debugging.md'. Cannot be 'MEMORY.md'.
+        source_project: Short project name (fuzzy-matched) identifying the source in cache.
+        broadcast: False = push to matching project only; True = push to all projects on each VM.
+        target_vms: VM names to target; defaults to all configured VMs.
+        content: If provided, push this content instead of the cached file.
+        overwrite: If False, skip destinations where file already exists (and report content).
+    """
+    if file == "MEMORY.md":
+        return json.dumps({"error": "MEMORY.md is the index file and cannot be shared directly"})
+
+    # Read config for VM list, SSH keys, memory paths
+    config_path = CACHE_DIR / "config.json"
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        return json.dumps({"error": f"Cannot read config: {e}"})
+
+    all_vms = {vm["name"]: vm for vm in config.get("vms", [])}
+
+    # Resolve source
+    cache = _cache_dir()
+    source_match = _find_project(cache, source_project)
+
+    if content is not None:
+        source_content = content
+        source_vm_name = source_match[0] if source_match else None
+        source_proj_dir = source_match[1] if source_match else None
+    else:
+        if source_match is None:
+            return json.dumps({"error": f"Project '{source_project}' not found in cache"})
+        source_vm_name, source_proj_dir, _ = source_match
+        source_file = source_proj_dir / "memory" / file
+        if not source_file.exists():
+            return json.dumps({"error": f"File '{file}' not found in project '{source_project}'"})
+        source_content = source_file.read_text(encoding="utf-8")
+
+    # Determine scope
+    if target_vms is not None:
+        scope = [n for n in target_vms if n in all_vms]
+    else:
+        scope = list(all_vms.keys())
+
+    def _ssh_opts(vm_config: dict) -> list[str]:
+        key = str(Path(vm_config["ssh_key"]).expanduser())
+        return [
+            "-i", key,
+            "-o", "ConnectTimeout=5",
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "BatchMode=yes",
+        ]
+
+    results = []
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8") as tf:
+        tf.write(source_content)
+        tmp_file = tf.name
+
+    try:
+        for vm_name in scope:
+            vm_config = all_vms[vm_name]
+            host = vm_config["host"]
+            user = vm_config["user"]
+            is_local = host in ("localhost", "127.0.0.1")
+
+            # Reachability check (non-localhost only)
+            if not is_local:
+                nc = subprocess.run(
+                    ["nc", "-z", "-w2", host, "22"],
+                    capture_output=True,
+                )
+                if nc.returncode != 0:
+                    results.append({"vm": vm_name, "status": "skipped", "reason": "unreachable"})
+                    continue
+
+            memory_paths = vm_config.get("memory_paths", [])
+
+            # Targeted vs broadcast
+            if broadcast:
+                targets = memory_paths
+            else:
+                targets = [
+                    mp for mp in memory_paths
+                    if _proj_name_from_path(mp).endswith(source_project)
+                    or _proj_name_from_path(mp) == source_project
+                ]
+                if not targets:
+                    results.append({
+                        "vm": vm_name,
+                        "status": "skipped",
+                        "reason": "project not on this VM",
+                    })
+                    continue
+
+            for mem_path in targets:
+                proj_encoded = Path(mem_path).parent.name  # e.g. -Users-dav-src-myapp
+                proj_display = proj_encoded.lstrip("-")
+                dest_file = f"{mem_path.rstrip('/')}/{file}"
+
+                # src == dest guard
+                if (source_vm_name is not None
+                        and source_proj_dir is not None
+                        and vm_name == source_vm_name
+                        and proj_encoded == source_proj_dir.name):
+                    results.append({
+                        "vm": vm_name,
+                        "project": proj_display,
+                        "dest": dest_file,
+                        "status": "skipped",
+                        "reason": "source and destination are the same file",
+                    })
+                    continue
+
+                # Check existence
+                if is_local:
+                    local_path = Path(mem_path.replace("~", str(Path.home()))) / file
+                    file_exists = local_path.exists()
+                    existing_content = (
+                        local_path.read_text(encoding="utf-8") if file_exists else None
+                    )
+                else:
+                    check = subprocess.run(
+                        ["ssh"] + _ssh_opts(vm_config)
+                        + [f"{user}@{host}",
+                           f"test -f {mem_path}/{file} && cat {mem_path}/{file} "
+                           f"|| echo __NOT_FOUND__"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    if "__NOT_FOUND__" in check.stdout:
+                        file_exists = False
+                        existing_content = None
+                    else:
+                        file_exists = True
+                        existing_content = check.stdout
+
+                if file_exists and not overwrite:
+                    results.append({
+                        "vm": vm_name,
+                        "project": proj_display,
+                        "dest": dest_file,
+                        "status": "skipped",
+                        "reason": "exists",
+                        "existing_content": existing_content,
+                    })
+                    continue
+
+                # Push
+                if is_local:
+                    local_dest = Path(mem_path.replace("~", str(Path.home()))) / file
+                    rsync_cmd = ["rsync", "-az", "--timeout=5", tmp_file, str(local_dest)]
+                else:
+                    ssh_e = "ssh " + " ".join(_ssh_opts(vm_config))
+                    rsync_cmd = [
+                        "rsync", "-az", "--timeout=5",
+                        "-e", ssh_e,
+                        tmp_file,
+                        f"{user}@{host}:{mem_path}/{file}",
+                    ]
+
+                proc = subprocess.run(rsync_cmd, capture_output=True, text=True, timeout=5)
+                if proc.returncode == 0:
+                    results.append({
+                        "vm": vm_name,
+                        "project": proj_display,
+                        "dest": dest_file,
+                        "status": "pushed",
+                    })
+                else:
+                    results.append({
+                        "vm": vm_name,
+                        "project": proj_display,
+                        "dest": dest_file,
+                        "status": "error",
+                        "error": (proc.stdout + proc.stderr).strip(),
+                    })
+    finally:
+        Path(tmp_file).unlink(missing_ok=True)
+
+    return json.dumps(results, indent=2)
+
+
+def _proj_name_from_path(mem_path: str) -> str:
+    """Extract the project name from a memory_path config entry.
+
+    '~/.claude/projects/-Users-dav-src-myapp/memory' -> 'Users-dav-src-myapp'
+    """
+    return Path(mem_path).parent.name.lstrip("-")
 
 
 @mcp.resource("memory://index")
