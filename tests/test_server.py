@@ -46,6 +46,68 @@ def populated_cache(cache_dir):
     return cache_dir
 
 
+@pytest.fixture
+def share_with_config(tmp_path, monkeypatch):
+    """Cache + config.json wired up for share_memory tests.
+
+    Layout:
+      tmp_path/
+        config.json
+        local/
+          -Users-dav-src-myapp/memory/
+            feedback_debugging.md   ← source file
+            MEMORY.md
+          -Users-dav-src-otherapp/memory/
+            MEMORY.md
+        remote-vm/
+          -Users-dav-src-myapp/memory/
+            MEMORY.md
+          -Users-dav-src-otherapp/memory/
+            MEMORY.md
+    """
+    monkeypatch.setattr(server, "_cache_dir", lambda: tmp_path)
+    monkeypatch.setattr(server, "CACHE_DIR", tmp_path)
+
+    config = {
+        "local_cache": str(tmp_path),
+        "vms": [
+            {
+                "name": "local",
+                "host": "localhost",
+                "user": "testuser",
+                "ssh_key": "~/.ssh/claude_memory_ed25519",
+                "memory_paths": [
+                    "~/.claude/projects/-Users-dav-src-myapp/memory",
+                    "~/.claude/projects/-Users-dav-src-otherapp/memory",
+                ],
+            },
+            {
+                "name": "remote-vm",
+                "host": "192.168.1.100",
+                "user": "testuser",
+                "ssh_key": "~/.ssh/claude_memory_ed25519",
+                "memory_paths": [
+                    "~/.claude/projects/-Users-dav-src-myapp/memory",
+                    "~/.claude/projects/-Users-dav-src-otherapp/memory",
+                ],
+            },
+        ],
+    }
+    (tmp_path / "config.json").write_text(json.dumps(config), encoding="utf-8")
+
+    for vm in ("local", "remote-vm"):
+        for proj in ("-Users-dav-src-myapp", "-Users-dav-src-otherapp"):
+            mem = tmp_path / vm / proj / "memory"
+            mem.mkdir(parents=True)
+            (mem / "MEMORY.md").write_text(f"# {proj} index\n", encoding="utf-8")
+
+    source = tmp_path / "local" / "-Users-dav-src-myapp" / "memory" / "feedback_debugging.md"
+    source.write_text("---\nname: debugging\ntype: feedback\n---\nMeasure before fixing.\n",
+                      encoding="utf-8")
+
+    return tmp_path
+
+
 # ── list_projects ──────────────────────────────────────────────────────────
 
 
@@ -300,3 +362,8 @@ search_memories = server.search_memories
 sync_status = server.sync_status
 all_projects_index = server.all_projects_index
 project_memory_resource = server.project_memory_resource
+try:
+    share_memory = server.share_memory
+except AttributeError:
+    # share_memory will be added in a later task
+    pass
