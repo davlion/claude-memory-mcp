@@ -715,7 +715,7 @@ def share_memory(
                             f"{user}@{host}:{mem_path}/{file}",
                         ]
 
-                    proc = subprocess.run(rsync_cmd, capture_output=True, text=True, timeout=5)
+                    proc = subprocess.run(rsync_cmd, capture_output=True, text=True, timeout=30)
                     if proc.returncode == 0:
                         index_line = _memory_index_line(file, source_content)
                         memory_index = _update_memory_index(
