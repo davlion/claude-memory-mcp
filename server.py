@@ -711,11 +711,16 @@ def share_memory(
 
                     proc = subprocess.run(rsync_cmd, capture_output=True, text=True, timeout=5)
                     if proc.returncode == 0:
+                        index_line = _memory_index_line(file, source_content)
+                        memory_index = _update_memory_index(
+                            mem_path, file, index_line, vm_config, user, host, is_local
+                        )
                         results.append({
                             "vm": vm_name,
                             "project": proj_display,
                             "dest": dest_file,
                             "status": "pushed",
+                            "memory_index": memory_index,
                         })
                     else:
                         results.append({

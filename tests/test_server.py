@@ -874,6 +874,70 @@ class TestShareMemory:
                 assert "project" in r
                 assert "dest" in r
 
+    def test_pushed_result_has_memory_index_updated(self, share_with_config, tmp_path):
+        """Pushed result includes memory_index: 'updated' when file not in target index."""
+        # share_with_config MEMORY.md files contain '# {proj} index\n' — no feedback_debugging entry
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 0
+            m.stdout = "__NOT_FOUND__\n" if cmd[0] == "ssh" else ""
+            m.stderr = ""
+            return m
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = json.loads(share_memory(
+                "feedback_debugging.md", "myapp", target_vms=["remote-vm"]
+            ))
+
+        pushed = [r for r in result if r.get("status") == "pushed"]
+        assert pushed, "Expected at least one pushed result"
+        assert pushed[0]["memory_index"] == "updated"
+
+    def test_pushed_result_has_memory_index_already_present(self, share_with_config, tmp_path):
+        """Pushed result includes memory_index: 'already_present' when file is in target index."""
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 0
+            if cmd[0] == "ssh":
+                cmd_str = " ".join(str(c) for c in cmd)
+                if "MEMORY.md" in cmd_str:
+                    m.stdout = "- [Debugging](feedback_debugging.md)\n"
+                else:
+                    m.stdout = "__NOT_FOUND__\n"
+            else:
+                m.stdout = ""
+            m.stderr = ""
+            return m
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = json.loads(share_memory(
+                "feedback_debugging.md", "myapp", target_vms=["remote-vm"]
+            ))
+
+        pushed = [r for r in result if r.get("status") == "pushed"]
+        assert pushed
+        assert pushed[0]["memory_index"] == "already_present"
+
+    def test_skipped_result_has_no_memory_index(self, share_with_config):
+        """Skipped results (file exists, overwrite=False) do not include memory_index."""
+        existing = "---\nname: old\n---\nOld content.\n"
+
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 0
+            m.stdout = existing if cmd[0] == "ssh" else ""
+            m.stderr = ""
+            return m
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = json.loads(share_memory(
+                "feedback_debugging.md", "myapp", target_vms=["remote-vm"]
+            ))
+
+        skipped = [r for r in result if r.get("status") == "skipped"]
+        assert skipped
+        assert "memory_index" not in skipped[0]
+
     def test_unreachable_vm_queues_entry(self, share_with_config, tmp_path):
         """Unreachable VM gets a queue entry in pending-shares.json."""
         def fake_run(cmd, **kwargs):
