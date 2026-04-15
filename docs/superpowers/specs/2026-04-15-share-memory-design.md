@@ -137,6 +137,49 @@ JSON array, one entry per destination attempted:
 - Timeout per rsync call: 5 seconds (consistent with `sync.sh`).
 - Overall tool timeout: 60 seconds (consistent with `sync_now`).
 
+## Test plan
+
+Unit tests in `tests/test_server.py`, following existing pattern: mock filesystem via `tmp_path`
++ `monkeypatch`, mock `subprocess.run` for rsync and SSH calls, mock `config.json` via a
+`mock_config` fixture.
+
+### Source resolution
+- File found in cache → proceeds to push
+- File not found in cache → error result
+- `MEMORY.md` as `file` argument → immediate error
+- `content=` provided → that content is used; cached file ignored
+
+### Target scoping
+- `target_vms` narrows to listed VMs only
+- Default includes all configured VMs including localhost
+- localhost skips nc reachability check
+
+### src == dest guard
+- Same VM + same project → `skipped: source and destination are the same file`
+- Same VM + different project (broadcast mode) → proceeds normally
+
+### Reachability
+- Non-localhost VM unreachable (nc fails) → `skipped: unreachable`
+- Non-localhost VM reachable → proceeds
+
+### Targeted mode
+- Matching project found on target VM → attempts push
+- No matching project on target VM → `skipped: project not on this VM`
+
+### Broadcast mode
+- All `memory_paths` on VM attempted
+- Path matching src is skipped (src == dest), others proceed
+
+### Conflict handling
+- File absent on dest → `pushed`
+- File exists, `overwrite=False` → `skipped: exists` with existing content in result
+- File exists, `overwrite=True` → `pushed`
+- rsync subprocess fails → `error` with stderr in result
+
+### Return shape
+- JSON array, one entry per destination attempted
+- Each entry has `vm`, `project`, `dest`, `status`, and optional `reason` / `existing_content` / `error`
+
 ## Out of scope
 
 - Pushing `MEMORY.md` index files (guarded)
