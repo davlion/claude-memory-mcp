@@ -349,10 +349,14 @@ def share_memory(
 
             # Reachability check (non-localhost only)
             if not is_local:
-                nc = subprocess.run(
-                    ["nc", "-z", "-w2", host, "22"],
-                    capture_output=True,
-                )
+                try:
+                    nc = subprocess.run(
+                        ["nc", "-z", "-w2", host, "22"],
+                        capture_output=True,
+                    )
+                except subprocess.TimeoutExpired:
+                    results.append({"vm": vm_name, "status": "skipped", "reason": "unreachable"})
+                    continue
                 if nc.returncode != 0:
                     results.append({"vm": vm_name, "status": "skipped", "reason": "unreachable"})
                     continue
@@ -393,67 +397,78 @@ def share_memory(
                     })
                     continue
 
-                # Check existence
-                if is_local:
-                    local_path = Path(mem_path).expanduser() / file
-                    file_exists = local_path.exists()
-                    existing_content = (
-                        local_path.read_text(encoding="utf-8") if file_exists else None
-                    )
-                else:
-                    check = subprocess.run(
-                        ["ssh"] + _ssh_opts(vm_config)
-                        + [f"{user}@{host}",
-                           f"test -f '{mem_path}/{file}' && cat '{mem_path}/{file}' "
-                           f"|| echo __NOT_FOUND__"],
-                        capture_output=True, text=True, timeout=10,
-                    )
-                    if "__NOT_FOUND__" in check.stdout:
-                        file_exists = False
-                        existing_content = None
+                try:
+                    # Check existence
+                    if is_local:
+                        local_path = Path(mem_path).expanduser() / file
+                        file_exists = local_path.exists()
+                        existing_content = (
+                            local_path.read_text(encoding="utf-8") if file_exists else None
+                        )
                     else:
-                        file_exists = True
-                        existing_content = check.stdout
+                        remote_dest = f"{mem_path}/{file}".replace("~", "$HOME")
+                        check = subprocess.run(
+                            ["ssh"] + _ssh_opts(vm_config)
+                            + [f"{user}@{host}",
+                               f'test -f "{remote_dest}" && cat "{remote_dest}" '
+                               f'|| echo __NOT_FOUND__'],
+                            capture_output=True, text=True, timeout=10,
+                        )
+                        if "__NOT_FOUND__" in check.stdout:
+                            file_exists = False
+                            existing_content = None
+                        else:
+                            file_exists = True
+                            existing_content = check.stdout
 
-                if file_exists and not overwrite:
-                    results.append({
-                        "vm": vm_name,
-                        "project": proj_display,
-                        "dest": dest_file,
-                        "status": "skipped",
-                        "reason": "exists",
-                        "existing_content": existing_content,
-                    })
-                    continue
+                    if file_exists and not overwrite:
+                        results.append({
+                            "vm": vm_name,
+                            "project": proj_display,
+                            "dest": dest_file,
+                            "status": "skipped",
+                            "reason": "exists",
+                            "existing_content": existing_content,
+                        })
+                        continue
 
-                # Push
-                if is_local:
-                    local_dest = Path(mem_path).expanduser() / file
-                    rsync_cmd = ["rsync", "-az", "--timeout=5", tmp_file, str(local_dest)]
-                else:
-                    ssh_e = "ssh " + " ".join(_ssh_opts(vm_config))
-                    rsync_cmd = [
-                        "rsync", "-az", "--timeout=5",
-                        "-e", ssh_e,
-                        tmp_file,
-                        f"{user}@{host}:{mem_path}/{file}",
-                    ]
+                    # Push
+                    if is_local:
+                        local_dest = Path(mem_path).expanduser() / file
+                        rsync_cmd = ["rsync", "-az", "--timeout=5", tmp_file, str(local_dest)]
+                    else:
+                        ssh_e = "ssh " + " ".join(_ssh_opts(vm_config))
+                        rsync_cmd = [
+                            "rsync", "-az", "--timeout=5",
+                            "-e", ssh_e,
+                            tmp_file,
+                            f"{user}@{host}:{mem_path}/{file}",
+                        ]
 
-                proc = subprocess.run(rsync_cmd, capture_output=True, text=True, timeout=5)
-                if proc.returncode == 0:
-                    results.append({
-                        "vm": vm_name,
-                        "project": proj_display,
-                        "dest": dest_file,
-                        "status": "pushed",
-                    })
-                else:
+                    proc = subprocess.run(rsync_cmd, capture_output=True, text=True, timeout=5)
+                    if proc.returncode == 0:
+                        results.append({
+                            "vm": vm_name,
+                            "project": proj_display,
+                            "dest": dest_file,
+                            "status": "pushed",
+                        })
+                    else:
+                        results.append({
+                            "vm": vm_name,
+                            "project": proj_display,
+                            "dest": dest_file,
+                            "status": "error",
+                            "error": (proc.stdout + proc.stderr).strip(),
+                        })
+
+                except subprocess.TimeoutExpired:
                     results.append({
                         "vm": vm_name,
                         "project": proj_display,
                         "dest": dest_file,
                         "status": "error",
-                        "error": (proc.stdout + proc.stderr).strip(),
+                        "error": "timed out",
                     })
     finally:
         Path(tmp_file).unlink(missing_ok=True)
