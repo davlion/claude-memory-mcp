@@ -643,6 +643,234 @@ class TestShareMemory:
                 assert "project" in r
                 assert "dest" in r
 
+    def test_unreachable_vm_queues_entry(self, share_with_config, tmp_path):
+        """Unreachable VM gets a queue entry in pending-shares.json."""
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 1 if cmd[0] == "nc" else 0
+            m.stdout = ""
+            m.stderr = ""
+            return m
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = json.loads(share_memory(
+                "feedback_debugging.md", "myapp",
+                target_vms=["remote-vm"]
+            ))
+
+        assert result[0]["status"] == "queued"
+        queue_path = tmp_path / "pending-shares.json"
+        assert queue_path.exists()
+        entries = json.loads(queue_path.read_text(encoding="utf-8"))
+        assert len(entries) == 1
+        assert entries[0]["target_vm"] == "remote-vm"
+        assert entries[0]["file"] == "feedback_debugging.md"
+        assert entries[0]["memory_path"] == "~/.claude/projects/-Users-dav-src-myapp/memory"
+        assert entries[0]["overwrite"] is False
+        assert "queued_at" in entries[0]
+
+    def test_unreachable_vm_queue_entry_has_content(self, share_with_config, tmp_path):
+        """Queue entry captures file content at queue time."""
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 1 if cmd[0] == "nc" else 0
+            m.stdout = ""
+            m.stderr = ""
+            return m
+
+        with patch("subprocess.run", side_effect=fake_run):
+            share_memory("feedback_debugging.md", "myapp", target_vms=["remote-vm"])
+
+        entries = json.loads(
+            (tmp_path / "pending-shares.json").read_text(encoding="utf-8")
+        )
+        assert entries[0]["content"] == (
+            "---\nname: debugging\ntype: feedback\n---\nMeasure before fixing.\n"
+        )
+
+    def test_unreachable_broadcast_queues_all_paths(self, share_with_config, tmp_path):
+        """Broadcast mode queues one entry per memory_path on unreachable VM."""
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 1 if cmd[0] == "nc" else 0
+            m.stdout = ""
+            m.stderr = ""
+            return m
+
+        with patch("subprocess.run", side_effect=fake_run):
+            share_memory(
+                "feedback_debugging.md", "myapp",
+                target_vms=["remote-vm"],
+                broadcast=True
+            )
+
+        entries = json.loads(
+            (tmp_path / "pending-shares.json").read_text(encoding="utf-8")
+        )
+        paths = {e["memory_path"] for e in entries}
+        assert "~/.claude/projects/-Users-dav-src-myapp/memory" in paths
+        assert "~/.claude/projects/-Users-dav-src-otherapp/memory" in paths
+
+    def test_no_project_on_vm_not_queued(self, share_with_config, tmp_path, monkeypatch):
+        """VM with no matching project is not queued (skipped as before)."""
+        config_no_match = {
+            "local_cache": str(tmp_path),
+            "vms": [
+                {
+                    "name": "no-myapp-vm",
+                    "host": "192.168.1.200",
+                    "user": "testuser",
+                    "ssh_key": "~/.ssh/claude_memory_ed25519",
+                    "memory_paths": ["~/.claude/projects/-Users-dav-src-unrelated/memory"],
+                }
+            ],
+        }
+        (tmp_path / "config.json").write_text(json.dumps(config_no_match), encoding="utf-8")
+
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 0
+            m.stdout = ""
+            m.stderr = ""
+            return m
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = json.loads(share_memory("feedback_debugging.md", "myapp"))
+
+        assert result[0]["status"] == "skipped"
+        assert not (tmp_path / "pending-shares.json").exists()
+
+
+# ── sync_now pending shares processing ────────────────────────────────────
+
+
+class TestSyncNowPendingShares:
+
+    def _make_queue(self, tmp_path, entries):
+        """Write pending-shares.json with given entries."""
+        (tmp_path / "pending-shares.json").write_text(
+            json.dumps(entries), encoding="utf-8"
+        )
+
+    def _base_entry(self, vm="remote-vm", path="~/.claude/projects/-Users-dav-src-myapp/memory"):
+        return {
+            "queued_at": "2026-04-15T10:00:00Z",
+            "file": "feedback_debugging.md",
+            "content": "Measure before fixing.\n",
+            "target_vm": vm,
+            "memory_path": path,
+            "overwrite": False,
+        }
+
+    def test_empty_queue_no_error(self, share_with_config, tmp_path):
+        """sync_now with no pending-shares.json returns pending_shares: []."""
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 0
+            m.stdout = "sync complete"
+            m.stderr = ""
+            return m
+
+        with patch("subprocess.run", side_effect=fake_run):
+            with patch("pathlib.Path.exists", return_value=False):
+                result = json.loads(sync_now())
+
+        assert result.get("pending_shares", []) == []
+
+    def test_reachable_vm_entry_pushed_and_removed(self, share_with_config, tmp_path):
+        """When queued VM becomes reachable, entry is pushed and removed from queue."""
+        self._make_queue(tmp_path, [self._base_entry()])
+
+        rsync_called = []
+
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 0
+            m.stdout = "__NOT_FOUND__\n" if cmd[0] == "ssh" else "sync complete"
+            m.stderr = ""
+            if cmd[0] == "rsync":
+                rsync_called.append(True)
+            return m
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = json.loads(sync_now())
+
+        assert rsync_called
+        pending = result.get("pending_shares", [])
+        assert any(e["status"] == "pushed" for e in pending)
+        # Queue file should be gone (empty queue)
+        assert not (tmp_path / "pending-shares.json").exists()
+
+    def test_still_unreachable_entry_stays_in_queue(self, share_with_config, tmp_path):
+        """Entry for still-unreachable VM stays in pending-shares.json."""
+        self._make_queue(tmp_path, [self._base_entry()])
+
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            # sync.sh succeeds but nc for pending shares fails
+            if cmd[0] == "nc":
+                m.returncode = 1
+            else:
+                m.returncode = 0
+                m.stdout = "sync complete"
+                m.stderr = ""
+            return m
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = json.loads(sync_now())
+
+        pending = result.get("pending_shares", [])
+        assert any(e["status"] == "still_unreachable" for e in pending)
+        # Entry should remain in queue
+        assert (tmp_path / "pending-shares.json").exists()
+        remaining = json.loads(
+            (tmp_path / "pending-shares.json").read_text(encoding="utf-8")
+        )
+        assert len(remaining) == 1
+
+    def test_mixed_queue_partial_processing(self, share_with_config, tmp_path):
+        """Some entries pushed, some remain when VMs have different reachability."""
+        self._make_queue(tmp_path, [
+            self._base_entry(vm="remote-vm"),
+            self._base_entry(vm="earsvm", path="~/.claude/projects/-Users-dav-src-myapp/memory"),
+        ])
+
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 0
+            m.stdout = "__NOT_FOUND__\n" if cmd[0] == "ssh" else "sync complete"
+            m.stderr = ""
+            # earsvm unreachable
+            if cmd[0] == "nc" and "earsvm" in str(cmd):
+                m.returncode = 1
+            return m
+
+        # Need earsvm in config — patch it in
+        config = json.loads((tmp_path / "config.json").read_text())
+        config["vms"].append({
+            "name": "earsvm",
+            "host": "earsvm.local",
+            "user": "testuser",
+            "ssh_key": "~/.ssh/claude_memory_ed25519",
+            "memory_paths": ["~/.claude/projects/-Users-dav-src-myapp/memory"],
+        })
+        (tmp_path / "config.json").write_text(json.dumps(config), encoding="utf-8")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = json.loads(sync_now())
+
+        pending = result.get("pending_shares", [])
+        statuses = {e["target_vm"]: e["status"] for e in pending}
+        assert statuses.get("remote-vm") == "pushed"
+        assert statuses.get("earsvm") == "still_unreachable"
+
+        # Only earsvm entry should remain
+        remaining = json.loads(
+            (tmp_path / "pending-shares.json").read_text(encoding="utf-8")
+        )
+        assert len(remaining) == 1
+        assert remaining[0]["target_vm"] == "earsvm"
+
 
 # ── Helper: import tool and resource functions at module level ─────────────
 
@@ -654,3 +882,4 @@ sync_status = server.sync_status
 all_projects_index = server.all_projects_index
 project_memory_resource = server.project_memory_resource
 share_memory = server.share_memory
+sync_now = server.sync_now
