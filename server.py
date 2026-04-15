@@ -189,7 +189,7 @@ def _process_pending_shares(cache: Path, config: dict) -> list:
             # Push
             ssh_e = "ssh " + " ".join(_ssh_opts(vm_config))
             rsync_cmd = [
-                "rsync", "-az", "--timeout=5",
+                "rsync", "-az",
                 "-e", ssh_e,
                 tmp_file,
                 f"{user}@{host}:{dest_file}",
@@ -325,7 +325,7 @@ def _update_memory_index(
     try:
         ssh_e = "ssh " + " ".join(_ssh_opts(vm_config))
         proc = subprocess.run(
-            ["rsync", "-az", "--timeout=5", "-e", ssh_e,
+            ["rsync", "-az", "-e", ssh_e,
              tmp_index, f"{user}@{host}:{mem_path}/MEMORY.md"],
             capture_output=True, text=True, timeout=10,
         )
@@ -705,11 +705,11 @@ def share_memory(
                     # Push
                     if is_local:
                         local_dest = Path(mem_path).expanduser() / file
-                        rsync_cmd = ["rsync", "-az", "--timeout=5", tmp_file, str(local_dest)]
+                        rsync_cmd = ["rsync", "-az", tmp_file, str(local_dest)]
                     else:
                         ssh_e = "ssh " + " ".join(_ssh_opts(vm_config))
                         rsync_cmd = [
-                            "rsync", "-az", "--timeout=5",
+                            "rsync", "-az",
                             "-e", ssh_e,
                             tmp_file,
                             f"{user}@{host}:{mem_path}/{file}",
