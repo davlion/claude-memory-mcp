@@ -78,6 +78,25 @@ def _read_sync_data(cache: Path) -> dict:
     return {}
 
 
+def _proj_name_from_path(mem_path: str) -> str:
+    """Extract the project name from a memory_path config entry.
+
+    '~/.claude/projects/-Users-dav-src-myapp/memory' -> 'Users-dav-src-myapp'
+    """
+    return Path(mem_path).parent.name.lstrip("-")
+
+
+def _ssh_opts(vm_config: dict) -> list[str]:
+    """Return SSH options list for rsync/ssh subprocess calls."""
+    key = str(Path(vm_config["ssh_key"]).expanduser())
+    return [
+        "-i", key,
+        "-o", "ConnectTimeout=5",
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "BatchMode=yes",
+    ]
+
+
 @mcp.tool()
 def list_projects() -> str:
     """List all known projects across all VMs with last-sync time and memory count."""
@@ -315,15 +334,6 @@ def share_memory(
     else:
         scope = list(all_vms.keys())
 
-    def _ssh_opts(vm_config: dict) -> list[str]:
-        key = str(Path(vm_config["ssh_key"]).expanduser())
-        return [
-            "-i", key,
-            "-o", "ConnectTimeout=5",
-            "-o", "StrictHostKeyChecking=accept-new",
-            "-o", "BatchMode=yes",
-        ]
-
     results = []
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8") as tf:
@@ -353,11 +363,9 @@ def share_memory(
             if broadcast:
                 targets = memory_paths
             else:
-                targets = [
-                    mp for mp in memory_paths
-                    if _proj_name_from_path(mp).endswith(source_project)
-                    or _proj_name_from_path(mp) == source_project
-                ]
+                exact = [mp for mp in memory_paths if _proj_name_from_path(mp) == source_project]
+                suffix = [mp for mp in memory_paths if _proj_name_from_path(mp).endswith(source_project)]
+                targets = exact if exact else suffix
                 if not targets:
                     results.append({
                         "vm": vm_name,
@@ -387,7 +395,7 @@ def share_memory(
 
                 # Check existence
                 if is_local:
-                    local_path = Path(mem_path.replace("~", str(Path.home()))) / file
+                    local_path = Path(mem_path).expanduser() / file
                     file_exists = local_path.exists()
                     existing_content = (
                         local_path.read_text(encoding="utf-8") if file_exists else None
@@ -396,7 +404,7 @@ def share_memory(
                     check = subprocess.run(
                         ["ssh"] + _ssh_opts(vm_config)
                         + [f"{user}@{host}",
-                           f"test -f {mem_path}/{file} && cat {mem_path}/{file} "
+                           f"test -f '{mem_path}/{file}' && cat '{mem_path}/{file}' "
                            f"|| echo __NOT_FOUND__"],
                         capture_output=True, text=True, timeout=10,
                     )
@@ -420,7 +428,7 @@ def share_memory(
 
                 # Push
                 if is_local:
-                    local_dest = Path(mem_path.replace("~", str(Path.home()))) / file
+                    local_dest = Path(mem_path).expanduser() / file
                     rsync_cmd = ["rsync", "-az", "--timeout=5", tmp_file, str(local_dest)]
                 else:
                     ssh_e = "ssh " + " ".join(_ssh_opts(vm_config))
@@ -451,14 +459,6 @@ def share_memory(
         Path(tmp_file).unlink(missing_ok=True)
 
     return json.dumps(results, indent=2)
-
-
-def _proj_name_from_path(mem_path: str) -> str:
-    """Extract the project name from a memory_path config entry.
-
-    '~/.claude/projects/-Users-dav-src-myapp/memory' -> 'Users-dav-src-myapp'
-    """
-    return Path(mem_path).parent.name.lstrip("-")
 
 
 @mcp.resource("memory://index")
