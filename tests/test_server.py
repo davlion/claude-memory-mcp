@@ -1165,6 +1165,28 @@ class TestSyncNowPendingShares:
         assert len(remaining) == 1
         assert remaining[0]["target_vm"] == "earsvm"
 
+    def test_retried_push_updates_memory_index(self, share_with_config, tmp_path):
+        """After queue retry push succeeds, result includes memory_index."""
+        self._make_queue(tmp_path, [self._base_entry()])
+
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 0
+            if cmd[0] == "ssh":
+                m.stdout = "__NOT_FOUND__\n"
+            else:
+                m.stdout = "sync complete"
+            m.stderr = ""
+            return m
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = json.loads(sync_now())
+
+        pending = result.get("pending_shares", [])
+        pushed = [e for e in pending if e.get("status") == "pushed"]
+        assert pushed
+        assert "memory_index" in pushed[0]
+
 
 # ── Helper: import tool and resource functions at module level ─────────────
 

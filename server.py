@@ -205,9 +205,15 @@ def _process_pending_shares(cache: Path, config: dict) -> list:
                 continue
 
             if proc.returncode == 0:
+                is_local = host in ("localhost", "127.0.0.1")
+                index_line = _memory_index_line(file, content)
+                memory_index = _update_memory_index(
+                    mem_path, file, index_line, vm_config, user, host, is_local
+                )
                 results.append({
                     "target_vm": vm_name, "memory_path": mem_path, "file": file,
                     "status": "pushed",
+                    "memory_index": memory_index,
                 })
             else:
                 remaining.append(entry)
