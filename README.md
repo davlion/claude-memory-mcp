@@ -66,8 +66,9 @@ ssh-copy-id -i ~/.ssh/claude_memory_ed25519.pub user@your-vm.local
 | `read_memories` | Returns the MEMORY.md index and all referenced memory file contents for a project |
 | `search_memories` | Full-text search across all memory files from all projects |
 | `sync_status` | Shows which VMs were reachable and when each was last synced |
-| `sync_now` | Trigger an immediate memory sync from all VMs |
+| `sync_now` | Trigger an immediate memory sync from all VMs and process the pending-shares queue. Returns `{"success", "output", "pending_shares": [...]}` |
 | `memory_sync_health` | Full health check: launchd job status, per-VM sync age, and any recent errors from the sync log |
+| `share_memory` | Push a memory file on-demand from one project to other VMs/projects. Parameters: `file`, `source_project`, `broadcast` (push to all projects on each VM), `target_vms` (narrow scope), `content` (override file content inline), `overwrite`. Returns a JSON array — one entry per destination — with `status` (`pushed`/`skipped`/`queued`/`error`) and `memory_index` (`updated`/`already_present`/`error:...`). Unreachable VMs are queued for retry on the next `sync_now`. |
 
 ## Configuration
 
@@ -86,8 +87,7 @@ Configuration lives at `~/.claude-memories/config.json`. See `config.example.jso
       ]
     }
   ],
-  "local_cache": "~/.claude-memories",
-  "sync_interval_minutes": 5
+  "local_cache": "~/.claude-memories"
 }
 ```
 
