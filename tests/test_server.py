@@ -109,6 +109,64 @@ def share_with_config(tmp_path, monkeypatch):
     return tmp_path
 
 
+# ── _parse_frontmatter ─────────────────────────────────────────────────────
+
+
+class TestParseFrontmatter:
+
+    def test_full_frontmatter(self):
+        content = "---\nname: Debugging\ndescription: Measure before fixing\ntype: feedback\n---\nBody.\n"
+        result = server._parse_frontmatter(content)
+        assert result["name"] == "Debugging"
+        assert result["description"] == "Measure before fixing"
+        assert result["type"] == "feedback"
+
+    def test_missing_description(self):
+        content = "---\nname: Debugging\ntype: feedback\n---\nBody.\n"
+        result = server._parse_frontmatter(content)
+        assert result["name"] == "Debugging"
+        assert "description" not in result
+
+    def test_missing_name(self):
+        content = "---\ndescription: Measure before fixing\n---\nBody.\n"
+        result = server._parse_frontmatter(content)
+        assert result["description"] == "Measure before fixing"
+        assert "name" not in result
+
+    def test_no_frontmatter(self):
+        content = "Just some markdown without frontmatter.\n"
+        assert server._parse_frontmatter(content) == {}
+
+    def test_empty_content(self):
+        assert server._parse_frontmatter("") == {}
+
+
+# ── _memory_index_line ─────────────────────────────────────────────────────
+
+
+class TestMemoryIndexLine:
+
+    def test_full_frontmatter(self):
+        content = "---\nname: Debugging discipline\ndescription: Measure before fixing\n---\nBody.\n"
+        line = server._memory_index_line("feedback_debugging.md", content)
+        assert line == "- [Debugging discipline](feedback_debugging.md) — Measure before fixing"
+
+    def test_missing_description(self):
+        content = "---\nname: Debugging discipline\n---\nBody.\n"
+        line = server._memory_index_line("feedback_debugging.md", content)
+        assert line == "- [Debugging discipline](feedback_debugging.md)"
+
+    def test_missing_name_uses_stem(self):
+        content = "---\ndescription: Measure before fixing\n---\nBody.\n"
+        line = server._memory_index_line("feedback_debugging.md", content)
+        assert line == "- [feedback_debugging](feedback_debugging.md) — Measure before fixing"
+
+    def test_no_frontmatter_uses_stem(self):
+        content = "Just markdown.\n"
+        line = server._memory_index_line("feedback_debugging.md", content)
+        assert line == "- [feedback_debugging](feedback_debugging.md)"
+
+
 # ── list_projects ──────────────────────────────────────────────────────────
 
 

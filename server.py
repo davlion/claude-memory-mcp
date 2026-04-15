@@ -241,6 +241,31 @@ def _ssh_opts(vm_config: dict) -> list[str]:
     ]
 
 
+def _parse_frontmatter(content: str) -> dict:
+    """Extract key/value pairs from YAML frontmatter (between --- delimiters)."""
+    lines = content.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}
+    fields = {}
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        if ":" in line:
+            key, _, value = line.partition(":")
+            fields[key.strip()] = value.strip()
+    return fields
+
+
+def _memory_index_line(file: str, content: str) -> str:
+    """Build a MEMORY.md entry line from a file's frontmatter content."""
+    meta = _parse_frontmatter(content)
+    name = meta.get("name") or file.removesuffix(".md")
+    description = meta.get("description", "")
+    if description:
+        return f"- [{name}]({file}) — {description}"
+    return f"- [{name}]({file})"
+
+
 @mcp.tool()
 def list_projects() -> str:
     """List all known projects across all VMs with last-sync time and memory count."""
