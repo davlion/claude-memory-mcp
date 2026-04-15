@@ -266,6 +266,72 @@ def _memory_index_line(file: str, content: str) -> str:
     return f"- [{name}]({file})"
 
 
+def _update_memory_index(
+    mem_path: str,
+    file: str,
+    index_line: str,
+    vm_config: dict,
+    user: str,
+    host: str,
+    is_local: bool,
+) -> str:
+    """Append index_line to target MEMORY.md if file is not already listed.
+
+    Returns 'updated', 'already_present', or 'error: <reason>'.
+    No locking — last writer wins; caller is responsible for avoiding races.
+    """
+    if is_local:
+        local_index = Path(mem_path).expanduser() / "MEMORY.md"
+        try:
+            existing = local_index.read_text(encoding="utf-8") if local_index.exists() else ""
+        except OSError as e:
+            return f"error: {e}"
+        if file in existing:
+            return "already_present"
+        try:
+            local_index.write_text(existing + index_line + "\n", encoding="utf-8")
+        except OSError as e:
+            return f"error: {e}"
+        return "updated"
+
+    # Remote: SSH cat to read, rsync to push
+    remote_index = f"{mem_path}/MEMORY.md".replace("~", "$HOME")
+    try:
+        check = subprocess.run(
+            ["ssh"] + _ssh_opts(vm_config)
+            + [f"{user}@{host}",
+               f'cat "{remote_index}" 2>/dev/null || echo __NOT_FOUND__'],
+            capture_output=True, text=True, timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return "error: timed out reading MEMORY.md"
+
+    existing = "" if "__NOT_FOUND__" in check.stdout else check.stdout
+    if file in existing:
+        return "already_present"
+
+    updated = existing + index_line + "\n"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False,
+                                     encoding="utf-8") as tf:
+        tf.write(updated)
+        tmp_index = tf.name
+
+    try:
+        ssh_e = "ssh " + " ".join(_ssh_opts(vm_config))
+        proc = subprocess.run(
+            ["rsync", "-az", "--timeout=5", "-e", ssh_e,
+             tmp_index, f"{user}@{host}:{mem_path}/MEMORY.md"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode == 0:
+            return "updated"
+        return f"error: {(proc.stdout + proc.stderr).strip()}"
+    except subprocess.TimeoutExpired:
+        return "error: timed out pushing MEMORY.md"
+    finally:
+        Path(tmp_index).unlink(missing_ok=True)
+
+
 @mcp.tool()
 def list_projects() -> str:
     """List all known projects across all VMs with last-sync time and memory count."""

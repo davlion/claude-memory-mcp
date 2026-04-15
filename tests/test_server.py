@@ -1,6 +1,7 @@
 """Unit tests for server.py MCP tools with mock filesystem."""
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -165,6 +166,155 @@ class TestMemoryIndexLine:
         content = "Just markdown.\n"
         line = server._memory_index_line("feedback_debugging.md", content)
         assert line == "- [feedback_debugging](feedback_debugging.md)"
+
+
+# ── _update_memory_index ───────────────────────────────────────────────────
+
+
+class TestUpdateMemoryIndex:
+
+    VM_CONFIG = {
+        "name": "remote-vm",
+        "host": "192.168.1.100",
+        "user": "testuser",
+        "ssh_key": "~/.ssh/claude_memory_ed25519",
+    }
+    INDEX_LINE = "- [Debugging](feedback_debugging.md) — Measure before fixing"
+
+    # ── localhost path ──────────────────────────────────────────────────────
+
+    def test_localhost_appends_to_existing_index(self, tmp_path):
+        """Appends entry to existing MEMORY.md when file not already listed."""
+        mem_dir = tmp_path / "memory"
+        mem_dir.mkdir()
+        (mem_dir / "MEMORY.md").write_text("- [Other](other.md)\n", encoding="utf-8")
+        # Use absolute path — expanduser() is a no-op for paths without ~
+        mem_path = str(mem_dir)
+
+        result = server._update_memory_index(
+            mem_path, "feedback_debugging.md", self.INDEX_LINE,
+            self.VM_CONFIG, "testuser", "localhost", is_local=True,
+        )
+
+        assert result == "updated"
+        content = (mem_dir / "MEMORY.md").read_text(encoding="utf-8")
+        assert self.INDEX_LINE in content
+
+    def test_localhost_creates_missing_index(self, tmp_path):
+        """Creates MEMORY.md from scratch when it doesn't exist."""
+        mem_dir = tmp_path / "memory"
+        mem_dir.mkdir()
+        mem_path = str(mem_dir)
+
+        result = server._update_memory_index(
+            mem_path, "feedback_debugging.md", self.INDEX_LINE,
+            self.VM_CONFIG, "testuser", "localhost", is_local=True,
+        )
+
+        assert result == "updated"
+        content = (mem_dir / "MEMORY.md").read_text(encoding="utf-8")
+        assert self.INDEX_LINE in content
+
+    def test_localhost_already_present(self, tmp_path):
+        """Returns 'already_present' when filename is already in MEMORY.md."""
+        mem_dir = tmp_path / "memory"
+        mem_dir.mkdir()
+        (mem_dir / "MEMORY.md").write_text(
+            "- [Debugging](feedback_debugging.md)\n", encoding="utf-8"
+        )
+        mem_path = str(mem_dir)
+
+        result = server._update_memory_index(
+            mem_path, "feedback_debugging.md", self.INDEX_LINE,
+            self.VM_CONFIG, "testuser", "localhost", is_local=True,
+        )
+
+        assert result == "already_present"
+
+    # ── remote path ─────────────────────────────────────────────────────────
+
+    def test_remote_appends_when_not_present(self):
+        """Reads remote MEMORY.md via SSH, appends entry, pushes via rsync."""
+        rsync_called = []
+
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 0
+            if cmd[0] == "ssh":
+                m.stdout = "- [Other](other.md)\n"
+            else:
+                m.stdout = ""
+                rsync_called.append(True)
+            m.stderr = ""
+            return m
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = server._update_memory_index(
+                "~/.claude/projects/-Users-dav-src-myapp/memory",
+                "feedback_debugging.md", self.INDEX_LINE,
+                self.VM_CONFIG, "testuser", "192.168.1.100", is_local=False,
+            )
+
+        assert result == "updated"
+        assert rsync_called
+
+    def test_remote_missing_index_creates_it(self):
+        """Creates MEMORY.md on remote when SSH returns __NOT_FOUND__."""
+        rsync_called = []
+
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 0
+            if cmd[0] == "ssh":
+                m.stdout = "__NOT_FOUND__\n"
+            else:
+                m.stdout = ""
+                rsync_called.append(True)
+            m.stderr = ""
+            return m
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = server._update_memory_index(
+                "~/.claude/projects/-Users-dav-src-myapp/memory",
+                "feedback_debugging.md", self.INDEX_LINE,
+                self.VM_CONFIG, "testuser", "192.168.1.100", is_local=False,
+            )
+
+        assert result == "updated"
+        assert rsync_called
+
+    def test_remote_already_present(self):
+        """Returns 'already_present' when filename found in remote MEMORY.md."""
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 0
+            m.stdout = "- [Debugging](feedback_debugging.md)\n"
+            m.stderr = ""
+            return m
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = server._update_memory_index(
+                "~/.claude/projects/-Users-dav-src-myapp/memory",
+                "feedback_debugging.md", self.INDEX_LINE,
+                self.VM_CONFIG, "testuser", "192.168.1.100", is_local=False,
+            )
+
+        assert result == "already_present"
+
+    def test_remote_ssh_timeout_returns_error(self):
+        """SSH timeout reading MEMORY.md returns error string."""
+        def fake_run(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, 10)
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = server._update_memory_index(
+                "~/.claude/projects/-Users-dav-src-myapp/memory",
+                "feedback_debugging.md", self.INDEX_LINE,
+                self.VM_CONFIG, "testuser", "192.168.1.100", is_local=False,
+            )
+
+        assert result.startswith("error:")
+        assert "timed out" in result
 
 
 # ── list_projects ──────────────────────────────────────────────────────────
