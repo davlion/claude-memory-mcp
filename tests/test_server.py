@@ -301,6 +301,29 @@ class TestUpdateMemoryIndex:
 
         assert result == "already_present"
 
+    def test_remote_rsync_failure_returns_error(self):
+        """rsync non-zero exit returns error string; not an exception."""
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            if cmd[0] == "ssh":
+                m.returncode = 0
+                m.stdout = "__NOT_FOUND__\n"
+                m.stderr = ""
+            else:  # rsync
+                m.returncode = 1
+                m.stdout = ""
+                m.stderr = "rsync: connection failed"
+            return m
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = server._update_memory_index(
+                "~/.claude/projects/-Users-dav-src-myapp/memory",
+                "feedback_debugging.md", self.INDEX_LINE,
+                self.VM_CONFIG, "testuser", "192.168.1.100", is_local=False,
+            )
+
+        assert result.startswith("error:")
+
     def test_remote_ssh_timeout_returns_error(self):
         """SSH timeout reading MEMORY.md returns error string."""
         def fake_run(cmd, **kwargs):

@@ -286,7 +286,7 @@ def _update_memory_index(
             existing = local_index.read_text(encoding="utf-8") if local_index.exists() else ""
         except OSError as e:
             return f"error: {e}"
-        if file in existing:
+        if f"({file})" in existing:
             return "already_present"
         try:
             local_index.write_text(existing + index_line + "\n", encoding="utf-8")
@@ -307,7 +307,7 @@ def _update_memory_index(
         return "error: timed out reading MEMORY.md"
 
     existing = "" if "__NOT_FOUND__" in check.stdout else check.stdout
-    if file in existing:
+    if f"({file})" in existing:
         return "already_present"
 
     updated = existing + index_line + "\n"
