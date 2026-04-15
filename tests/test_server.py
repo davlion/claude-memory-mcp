@@ -66,7 +66,7 @@ def share_with_config(tmp_path, monkeypatch):
             MEMORY.md
     """
     monkeypatch.setattr(server, "_cache_dir", lambda: tmp_path)
-    monkeypatch.setattr(server, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(server, "CACHE_DIR", tmp_path)  # share_memory reads CACHE_DIR directly for config
 
     config = {
         "local_cache": str(tmp_path),
@@ -365,5 +365,4 @@ project_memory_resource = server.project_memory_resource
 try:
     share_memory = server.share_memory
 except AttributeError:
-    # share_memory will be added in a later task
-    pass
+    share_memory = None  # will be implemented in Task 6
