@@ -361,19 +361,6 @@ For when Claude works but the memory connector doesn't: the Worker or GitHub is 
   - Reads while the connector is unavailable: only the stale snapshot (§7 G) is available. `memory_read` and `memory_search` fail visibly.
 - **Precedent:** the `claude-memory-mcp` pending-shares queue, which retries unreachable VMs on the next `sync_now`.
 
-### G. Last-known-good snapshot (local Claude Code only)
-
-Gives a session some memories when the connector is unavailable, or when Claude skips the session-start `memory_index` call. It is read-only and always labeled stale.
-
-- **Location:** `~/.claude/memory-cache/<key>.md`, mode `0600`. `<key>` is the origin remote as `owner__repo`, or `_none` outside a git repo.
-- **Content:** the `memory_index` result (the general, client, and project indexes, which are one line per memory), with an `as_of` timestamp and the scope commit SHAs. It holds the index only, not memory bodies.
-- **Writer:** Claude. After each successful `memory_index`, it overwrites the snapshot for the current key. Layer A includes this rule. Nothing else writes to the cache. The hook can't, because only the connector holds GitHub credentials.
-- **Reader:** the `SessionStart` hook. When a snapshot exists for the current key, the hook always injects it as `additionalContext`, headed: "Memory snapshot from <as_of> (stale; read-only). A successful `memory_index` supersedes it." It is capped at 8 KB; if truncated, it says so.
-- **Rules:**
-  - Claude never saves, updates, or deletes based on the snapshot alone. A save still goes through `memory_save` or the outbox. An update based on a snapshot line has no `version`, so it is treated as a create and the similarity check catches it.
-  - If `memory_index` fails, Claude says the memories shown are from the snapshot, with its date.
-- **Not covered:** cloud sessions and claude.ai chat, which have no persistent local disk.
-
 ### F. Preflight health check
 
 At session start, two halves check everything. **Every failed check reports the action the user should take**, not just what's wrong.
@@ -416,6 +403,19 @@ The hook's network budget is one `GET` with a 1 s timeout. Its total runtime mus
   > ⚠ memory: `acme` unreachable — ask an owner of acme-org to install the app: <link>. Saves to `acme` will be queued.
 - After that, Claude doesn't bring up health again unless asked or unless the status changes.
 - If `memory_index` returns no result at all (the connector isn't loaded or can't be reached), Claude reports: "⚠ memory connector unavailable — check claude.ai → Settings → Connectors → claude-memory is connected, and run `/mcp` to see if it's enabled in this session. Saves will be queued."
+
+### G. Last-known-good snapshot (local Claude Code only)
+
+Gives a session some memories when the connector is unavailable, or when Claude skips the session-start `memory_index` call. It is read-only and always labeled stale.
+
+- **Location:** `~/.claude/memory-cache/<key>.md`, mode `0600`. `<key>` is the origin remote as `owner__repo`, or `_none` outside a git repo.
+- **Content:** the `memory_index` result (the general, client, and project indexes, which are one line per memory), with an `as_of` timestamp and the scope commit SHAs. It holds the index only, not memory bodies.
+- **Writer:** Claude. After each successful `memory_index`, it overwrites the snapshot for the current key. Layer A includes this rule. Nothing else writes to the cache. The hook can't, because only the connector holds GitHub credentials.
+- **Reader:** the `SessionStart` hook. When a snapshot exists for the current key, the hook always injects it as `additionalContext`, headed: "Memory snapshot from <as_of> (stale; read-only). A successful `memory_index` supersedes it." It is capped at 8 KB; if truncated, it says so.
+- **Rules:**
+  - Claude never saves, updates, or deletes based on the snapshot alone. A save still goes through `memory_save` or the outbox. An update based on a snapshot line has no `version`, so it is treated as a create and the similarity check catches it.
+  - If `memory_index` fails, Claude says the memories shown are from the snapshot, with its date.
+- **Not covered:** cloud sessions and claude.ai chat, which have no persistent local disk.
 
 ## 8. Error handling
 
