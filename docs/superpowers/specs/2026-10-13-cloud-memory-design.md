@@ -254,7 +254,7 @@ No dedicated tool. Claude reads both files, saves the merged content to `<name>.
 - Connector tools are often deferred.
 - Claude has to decide whether a fact is general, client, or project.
 
-Turning auto-memory off removes the first problem. The four layers A–D below handle the rest.
+Turning auto-memory off removes the first problem. Layers A–D below handle the rest, and E covers saves made while the connector is unavailable.
 
 ### Auto-memory off
 
@@ -281,6 +281,8 @@ Covers local Code on the Mac and VMs. Distributed to the VMs as part of setup.
 > - About this codebase → scope `project` with `project` = the origin remote.
 >
 > If it's unclear, ask in one line ("general, <client>, or this project?"). With no git remote, project-specific facts can't be saved; say so. After saving, state the scope it went to.
+>
+> If `memory_save` fails because the connector is unavailable (unreachable, auth expired, upstream error, or the tools aren't loaded), write the memory to the outbox (`~/.claude/memory-outbox/`, format in §7 E) and say "queued in outbox for <scope>". Never drop it silently. If the session-start hook reports queued memories and the connector works, flush them.
 
 ### B. `UserPromptSubmit` hook
 
@@ -311,18 +313,54 @@ Sent by the Worker wherever the connector is enabled, so they reach cloud sessio
 > - one codebase (`project`, with its origin remote)
 >
 > If the scope is unclear, ask in one line. Never save secrets. Prefer updating an existing memory (pass its `version`) over creating a new one. After saving, tell the user the scope. If `memory_index` lists conflicts, offer to reconcile them.
+>
+> If a save fails with a retryable error (`unavailable`, `reauth_required`), tell the user plainly. In local Claude Code, follow the outbox rule in the user's CLAUDE.md. Elsewhere, there is no outbox: tell the user the memory was not saved.
 
-### D. Scope announcement
+### D. Save announcement
 
-Included in A and C: every save ends with "saved to **<scope>**" (for a project, "saved to **project billing**"), so misroutes are visible right away.
+Included in A and C. Every save attempt ends with exactly one of:
+
+- "saved to **<scope>**" (for a project: "saved to **project billing**")
+- "**queued in outbox** for <scope>"
+- "**not saved**: <reason>"
+
+Misroutes and unsaved memories are visible right away.
+
+### E. Outbox (local Claude Code only)
+
+For when Claude works but the memory connector doesn't: the Worker or GitHub is down or rate-limited, the token has expired, or the connector isn't loaded in this session. (With no internet at all, Claude Code itself doesn't run.)
+
+- **Location:** `~/.claude/memory-outbox/` on the Mac and VMs.
+- **Entry:** one file per queued save, named `<UTC timestamp>-<name>.md`. It holds the normal memory file plus an `outbox:` frontmatter block:
+
+  ```yaml
+  outbox:
+    op: save            # save | delete
+    scope: project      # general | <client> | project
+    project: acme-org/billing   # when scope is project
+    version: <blob sha> # the version the edit was based on; absent for create
+    queued_at: 2026-10-13T18:04:00Z
+    host: earsvm
+  ```
+
+- **Marker:** a non-empty outbox is the dirty flag. Entries carry their project, so the state is visible per project; no separate flag file.
+- **`SessionStart` hook** (user-level, Mac and VMs): counts entries. If there are any, it emits `additionalContext`: "N memories queued in outbox (M for this project). Once `memory_index` succeeds, flush them with `memory_save`/`memory_delete`, oldest first, and delete each entry only after a successful result." It outputs nothing when the outbox is empty, runs in under 100 ms, and needs no network.
+- **Flush:** Claude replays each entry through the normal tools, so secret scanning, the similarity check, and conflict handling all apply. A stale `version` produces a conflict copy rather than overwriting. An entry that gets a non-retryable result (`rejected_secret`, `invalid`, `no_memory_repo_for_owner`) is kept and reported to the user rather than deleted.
+- **Why Claude flushes rather than a script:** the connector authenticates through claude.ai, and writing to GitHub directly would bypass the server's checks.
+- **Not covered:**
+  - Cloud sessions: the outbox would be lost with the VM; the save is reported as not saved.
+  - claude.ai chat: there is no local disk.
+  - Reads while the connector is unavailable fail visibly. There is no local index cache in v1.
+- **Precedent:** the `claude-memory-mcp` pending-shares queue, which retries unreachable VMs on the next `sync_now`.
 
 ## 8. Error handling
 
 | Condition | Behavior |
 |---|---|
 | GitHub 404/403 on scope repo | Distinguish `app_not_installed` (installation lookup) from `no_user_access`; message names the fix |
-| Token refresh fails | Message: "reconnect the claude-memory connector in claude.ai settings" |
-| GitHub 5xx / rate limit | Fail clearly with the retry-after if known. **No silent local fallback.** |
+| Token refresh fails | `reauth_required`: "reconnect the claude-memory connector in claude.ai settings". Retryable: local Code queues the save in the outbox (§7 E) |
+| GitHub 5xx / rate limit | `unavailable`, with the retry-after if known. Retryable: local Code queues the save in the outbox; elsewhere it is reported as not saved. Never dropped silently. |
+| Connector unreachable or not loaded | No tool result at all. Local Code queues the save in the outbox; elsewhere it is reported as not saved. |
 | Ref update race | Re-read and re-apply. After 3 attempts → error |
 | Unknown scope | List valid scopes |
 | `scope: project` without `project` | `invalid`: "pass the git origin remote" |
@@ -373,6 +411,16 @@ Shell-level tests of the `UserPromptSubmit` script:
 - no output on a non-match
 - runs under 100 ms
 
+Shell-level tests of the `SessionStart` outbox hook:
+
+- empty or missing outbox → no output
+- entries counted overall and for the current project (by origin remote)
+- non-git directory → total only
+- malformed entry → counted and flagged, not crashing
+- runs under 100 ms
+
+Outbox entry format: a fixture-based round-trip test (memory frontmatter + `outbox:` block) shared with the flush instructions.
+
 ### Level 4 — Surface matrix (end-to-end)
 
 **Prerequisites:**
@@ -411,6 +459,10 @@ Shell-level tests of the `UserPromptSubmit` script:
 | S8 | Memory containing a secret | H1, H6 | refused; no commit |
 | S9 | Same memory edited concurrently from two hosts | H1 + H3 | conflict file appears; reconciled on next session start |
 | S10 | App uninstalled from test org | H1 | clear `app_not_installed` message |
+| S11 | Connector unavailable (disable the staging connector with `/mcp`, or block the Worker), then save | H1, H3 | entry in `~/.claude/memory-outbox/`; "queued in outbox for <scope>" announced; no commit |
+| S11b | S11 continued: restore the connector, start a new session | H1, H3 | hook reports the queued count; Claude flushes; commit lands; outbox empty |
+| S11c | Queued update whose `version` went stale (memory edited from another host before the flush) | H1 + H3 | flush produces a conflict copy, not an overwrite; outbox entry removed |
+| S11d | Connector unavailable in a cloud session and in chat | H5, H6 | "not saved: <reason>" announced; nothing queued |
 
 **Verification:** pass/fail is decided by checking the repos with `gh api`: expected commit, file, and trailers. For S0 and S4, also confirm that no local auto-memory files appeared. For S4n and S8, confirm no commit. Scripted hosts run a driver script that issues the prompt and then checks. Manual hosts follow a checklist, verified the same way.
 
@@ -422,7 +474,7 @@ Shell-level tests of the `UserPromptSubmit` script:
 
 1. User creates the Cloudflare account (2FA) and the GitHub App (guided). User creates `dav/claude-memory`, `dav/claude-memory-test`, and the test org.
 2. Build the Worker. Levels 1 and 2 green on staging.
-3. Add the staging connector in claude.ai. On the Mac and VMs: turn auto-memory off and install layers A and B. In the cloud environment: set the auto-memory env var. Run Level 3, then Level 4.
+3. Add the staging connector in claude.ai. On the Mac and VMs: turn auto-memory off and install layers A and B and the outbox `SessionStart` hook (E). In the cloud environment: set the auto-memory env var. Run Level 3, then Level 4.
 4. Deploy production.
 5. **One-time migration** of existing local memories:
    - Source: the `claude-memory-mcp` cache (`~/.claude-memories/<vm>/<project-slug>/memory/`), which holds the Mac's and the VMs' memories.
