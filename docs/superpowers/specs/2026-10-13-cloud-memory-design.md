@@ -211,8 +211,8 @@ All tools take `scope`: `general`, a client name (a key in `SCOPES`), or `projec
 Checks run in this order:
 
 1. **Validate:** name format, type enum, required fields. Failure → `status: invalid` with a message.
-2. **Visibility:** if the scope's repo is public → error `repo_public`, naming the repo and the fix. Nothing is written. The `private` flag comes from the `GET /repos/{repo}` call the store already makes to find the default branch, so this costs no extra request. `memory_delete` applies the same check; reads don't.
-3. **Secret scan** of all fields. A hit → `status: rejected_secret` with `pattern` (the rule name, never the matched text). Nothing is written.
+2. **Secret scan** of all fields. A hit → `status: rejected_secret` with `pattern` (the rule name, never the matched text). Nothing is written.
+3. **Visibility:** if the scope's repo is public → error `repo_public`, naming the repo and the fix. Nothing is written. The `private` flag comes from the `GET /repos/{repo}` call the store already makes to find the default branch, so this costs no extra request. `memory_delete` applies the same check; reads don't.
 4. **No `version` (create):**
    - If `<name>.md` exists → `status: exists`, with its `version`. Claude should read it and update instead.
    - If similar memories exist and `force` is not set → `status: similar_found`, with `similar: [{name, description}]` (max 3). Nothing is written.

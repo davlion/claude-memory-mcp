@@ -43,7 +43,8 @@
 - **Similarity threshold:** 0.5 (Jaccard), max 3 results.
 - **Write retries:** max 3 attempts on a ref race.
 - **Tool result statuses** (exact strings): `created`, `updated`, `conflict`, `exists`, `similar_found`, `rejected_secret`, `invalid`, `not_found`, `deleted`.
-- **Error codes** (exact strings): `invalid`, `unknown_scope`, `no_memory_repo_for_owner`, `unsupported_remote`, `not_reachable`, `reauth_required`, `unavailable`.
+- **Error codes** (exact strings): `invalid`, `unknown_scope`, `no_memory_repo_for_owner`, `unsupported_remote`, `not_reachable`, `repo_public`, `reauth_required`, `unavailable`.
+- **Public memory repos** (spec §6 `memory_save` step 3): saves and deletes to a repo whose `private` flag isn't `true` fail with `repo_public`; reads still work; health reports it. Missing or unknown visibility counts as public (fail closed).
 - **Redirect allowlist:**
   - `https://claude.ai/api/mcp/auth_callback`
   - `https://claude.com/api/mcp/auth_callback`
@@ -111,43 +112,23 @@ claude-memory-cloud/
 
 ---
 
-### Task 0: One-time setup (user, guided — no code)
+### Task 0: One-time setup (done 2026-10-14)
 
-The user does these steps; the agent walks them through and records the outputs. The user-facing version of these steps is `docs/cloud-memory/QUICKSTART.md` in `claude-memory-mcp` (Parts 2–4 and the Appendix); keep the two consistent, and fix the Quickstart wherever a step turns out to be wrong. **No later task can deploy or run integration tests without them.**
+The user completed these steps by following `docs/cloud-memory/QUICKSTART.md` in `claude-memory-mcp` (Parts 1–4 and the Appendix). Keep the two consistent, and fix the Quickstart wherever a step turns out to be wrong. Recorded values (none secret):
 
-- [ ] **Step 1: Cloudflare account**
-  1. Sign up at https://dash.cloudflare.com/sign-up and verify the email.
-  2. Turn on 2FA: My Profile → Authentication.
-  3. Workers & Pages → choose a `*.workers.dev` subdomain. Record it as `<sub>`.
-  4. In a terminal: `npx wrangler@4.150.0 login`, which opens a browser.
-  5. Verify: `npx wrangler@4.150.0 whoami` prints the account.
+| Item | Value |
+|---|---|
+| GitHub user | `davlion` |
+| Cloudflare workers.dev subdomain | `david-lion` (wrangler is logged in on the Mac) |
+| Staging URL | `https://claude-memory-staging.david-lion.workers.dev` |
+| Production URL | `https://claude-memory.david-lion.workers.dev` |
+| GitHub App | slug `davlion-claude-memory`, Client ID `Iv23liVDWNQ0QSUe8M44`; public; Contents read/write + Metadata read; both callback URLs registered; no private key |
+| Installed on `davlion` | `claude-memory`, `claude-memory-test` (both private, empty) |
+| Test client org | `davlion-test-client`, with `claude-memory` (empty, app installed) and `sample-app` (README, app **not** installed) |
 
-- [ ] **Step 2: GitHub repos and test org**
-  1. Create the private repo `dav/claude-memory-test`. Leave it empty.
-  2. Create the private repo `dav/claude-memory`. Leave it empty; it's used in Plan 4.
-  3. Create a free org `dav-test-client` (github.com → + → New organization → Free).
-  4. In that org, create the private repos `claude-memory` (empty) and `sample-app` (with a README).
+The GitHub client secret is in the user's password manager only. It never goes into the conversation.
 
-- [ ] **Step 3: GitHub App** at github.com → Settings → Developer settings → GitHub Apps → New GitHub App
-  - **Name:** `dav-claude-memory`. If the name is taken, choose another and record the slug.
-  - **Homepage URL:** `https://claude-memory-staging.<sub>.workers.dev`
-  - **Callback URL:** `https://claude-memory-staging.<sub>.workers.dev/callback`. Production gets added in Plan 4; a GitHub App allows up to 10 callback URLs.
-  - **Expire user authorization tokens:** ✅ (the default)
-  - **Request user authorization (OAuth) during installation:** ☐
-  - **Enable Device Flow:** ☐
-  - **Webhook → Active:** ☐ (unchecked)
-  - **Repository permissions:** Contents → **Read and write**. Metadata → Read (mandatory). Everything else: No access.
-  - **Account permissions:** none.
-  - **Where can this GitHub App be installed:** Any account.
-  - Create it, then on the app page: record the **Client ID** and **slug**, then click **Generate a new client secret** and record it.
-  - **Do not** generate a private key; it isn't needed.
-
-- [ ] **Step 4: Install the app**
-  1. Go to `https://github.com/apps/<slug>/installations/select_target`.
-  2. Install on **dav** → Only select repositories → `claude-memory-test`, `claude-memory`.
-  3. Install on **dav-test-client** → Only select repositories → `claude-memory`.
-
-- [ ] **Step 5: Record values** in `~/src/claude-memory-cloud/.dev.vars`, created in Task 1 and gitignored. The agent asks the user to paste the secret, never echoes it, and never commits it:
+**Still to do, in Task 1 Step 7:** `~/src/claude-memory-cloud/.dev.vars` (gitignored). The user creates it in their own editor; the agent never sees, echoes, or commits the secret:
 
 ```
 GITHUB_CLIENT_ID=<client id>
@@ -202,9 +183,9 @@ Then edit `package.json` so that it has `"type": "module"`, `"private": true`, a
     { "binding": "CACHE_KV", "id": "REPLACE_IN_TASK_14" }
   ],
   "vars": {
-    "PUBLIC_URL": "https://claude-memory-staging.REPLACE_SUB.workers.dev",
-    "SCOPES": "{\"general\":\"dav/claude-memory-test\",\"dav-test-client\":\"dav-test-client/claude-memory\"}",
-    "GITHUB_APP_SLUG": "dav-claude-memory",
+    "PUBLIC_URL": "https://claude-memory-staging.david-lion.workers.dev",
+    "SCOPES": "{\"general\":\"davlion/claude-memory-test\",\"davlion-test-client\":\"davlion-test-client/claude-memory\"}",
+    "GITHUB_APP_SLUG": "davlion-claude-memory",
     "WORKER_VERSION": "0.1.0",
     "MIN_HOOK_VERSION": "0.1.0"
   },
@@ -216,9 +197,9 @@ Then edit `package.json` so that it has `"type": "module"`, `"private": true`, a
         { "binding": "CACHE_KV", "id": "REPLACE_IN_PLAN_4" }
       ],
       "vars": {
-        "PUBLIC_URL": "https://claude-memory.REPLACE_SUB.workers.dev",
-        "SCOPES": "{\"general\":\"dav/claude-memory\"}",
-        "GITHUB_APP_SLUG": "dav-claude-memory",
+        "PUBLIC_URL": "https://claude-memory.david-lion.workers.dev",
+        "SCOPES": "{\"general\":\"davlion/claude-memory\"}",
+        "GITHUB_APP_SLUG": "davlion-claude-memory",
         "WORKER_VERSION": "0.1.0",
         "MIN_HOOK_VERSION": "0.1.0"
       }
@@ -291,7 +272,7 @@ export default defineProject({
       miniflare: {
         bindings: {
           PUBLIC_URL: "https://memory.test",
-          SCOPES: JSON.stringify({ general: "dav/claude-memory-test", acme: "acme-org/claude-memory" }),
+          SCOPES: JSON.stringify({ general: "davlion/claude-memory-test", acme: "acme-org/claude-memory" }),
           GITHUB_CLIENT_ID: "Iv1.testclient",
           GITHUB_CLIENT_SECRET: "test-secret",
           COOKIE_ENCRYPTION_KEY: "0".repeat(64),
@@ -397,7 +378,7 @@ it("mockFetch intercepts outbound fetch from worker code", async () => {
 
 - [ ] **Step 7: Run the tests and typecheck**
 
-Run: `cp .dev.vars.example .dev.vars` (skip this if Task 0 already created `.dev.vars`), then `npx vitest run test/smoke.test.ts && npx tsc --noEmit`
+Run: `cp .dev.vars.example .dev.vars`, then `npx vitest run test/smoke.test.ts && npx tsc --noEmit`. Tests use the bindings in `vitest.config.ts`, not `.dev.vars`. Then ask the user to open `.dev.vars` in their own editor and fill in the real values (Client ID from Task 0, the client secret from their password manager, and `openssl rand -hex 32`). Don't read the file afterwards; check only that `git check-ignore .dev.vars` succeeds.
 Expected: 2 passed, and no type errors.
 
 - [ ] **Step 8: Move the docs drafts into this repo**
@@ -828,7 +809,7 @@ git add src/secrets.ts test/secrets.test.ts && git commit -m "feat: secret scann
 **Interfaces:**
 - Consumes: `normalizeRemote` (Task 2).
 - Produces:
-  - `type ErrorCode = "invalid" | "unknown_scope" | "no_memory_repo_for_owner" | "unsupported_remote" | "not_reachable" | "reauth_required" | "unavailable"`
+  - `type ErrorCode = "invalid" | "unknown_scope" | "no_memory_repo_for_owner" | "unsupported_remote" | "not_reachable" | "repo_public" | "reauth_required" | "unavailable"`
   - `class OpError extends Error { code: ErrorCode; action?: string; retryAfter?: number }`
   - `type ScopeConfig = Record<string, string>` (scope name → `"owner/repo"`)
   - `parseScopes(json: string): ScopeConfig`. Throws on invalid input. The `project` scope name is reserved and rejected.
@@ -892,7 +873,7 @@ Expected: FAIL (modules not found)
 ```ts
 export type ErrorCode =
   | "invalid" | "unknown_scope" | "no_memory_repo_for_owner" | "unsupported_remote"
-  | "not_reachable" | "reauth_required" | "unavailable";
+  | "not_reachable" | "repo_public" | "reauth_required" | "unavailable";
 
 export class OpError extends Error {
   constructor(
@@ -1165,15 +1146,16 @@ git add src/github.ts test/github.test.ts && git commit -m "feat: GitHub REST cl
 - Consumes: `GitHub`, `GitHubError` (Task 6).
 - Produces:
   - `interface FileEntry { path: string; sha: string; content: string }`
-  - `interface Snapshot { commitSha: string | null; files: Map<string, FileEntry> }`
+  - `interface Snapshot { commitSha: string | null; isPrivate: boolean; files: Map<string, FileEntry> }`
     - `commitSha === null` means the repo is empty.
+    - `isPrivate` is the repo's `private` flag from `GET /repos/{repo}` (the call that already finds the default branch). Anything other than `true` → `false`.
     - Keys are paths **relative to the prefix**, e.g. `memories/a.md`, `MEMORY.md`.
     - For prefix `""`, anything under `projects/` is excluded.
   - `interface Change { path: string; content: string | null }`. The path is relative to the prefix; `null` means delete.
   - `type CommitResult = { ok: true; commitSha: string; url: string } | { ok: false; reason: "ref_moved" }`
   - `interface Store { snapshot(repo: string, prefix: string): Promise<Snapshot>; commit(repo: string, prefix: string, baseCommitSha: string | null, changes: Change[], message: string): Promise<CommitResult> }`
   - `class GitHubStore implements Store { constructor(gh: GitHub, cache?: KVNamespace) }`. Blobs are cached in KV under `blob:<sha>`; they're immutable.
-  - `test/fake-store.ts`: `class FakeStore implements Store` with `files: Map<string, Map<string,string>>` keyed by repo, then full path; a `commits: {repo, message, changes}[]` log; and `failNextCommit: number` to simulate ref races.
+  - `test/fake-store.ts`: `class FakeStore implements Store` with `files: Map<string, Map<string,string>>` keyed by repo, then full path; a `commits: {repo, message, changes}[]` log; `failNextCommit: number` to simulate ref races; and `publicRepos: Set<string>` (repos listed there snapshot with `isPrivate: false`).
 
 - [ ] **Step 1: Write the fake store** (it's test infrastructure and has no tests of its own)
 
@@ -1191,6 +1173,7 @@ export class FakeStore implements Store {
   commits: { repo: string; message: string; changes: Change[] }[] = [];
   heads = new Map<string, number>();
   failNextCommit = 0;
+  publicRepos = new Set<string>();
   /** Called after a snapshot is taken and before the commit is applied: simulates a concurrent writer. */
   beforeCommit?: () => void;
 
@@ -1217,7 +1200,7 @@ export class FakeStore implements Store {
       if (prefix === "" && rel.startsWith("projects/")) continue;
       files.set(rel, { path: rel, sha: await sha(content), content });
     }
-    return { commitSha: head === undefined ? null : `c${head}`, files };
+    return { commitSha: head === undefined ? null : `c${head}`, isPrivate: !this.publicRepos.has(repo), files };
   }
 
   async commit(repo: string, prefix: string, base: string | null, changes: Change[], message: string): Promise<CommitResult> {
@@ -1257,7 +1240,7 @@ const b64 = (s: string) => btoa(unescape(encodeURIComponent(s)));
 function repoRoutes(extra: Parameters<typeof mockFetch>[0] = []) {
   return [
     { method: "GET", url: `${R}/git/ref/heads/main`, respond: () => json({ object: { sha: "c1" } }) },
-    { method: "GET", url: R, respond: () => json({ default_branch: "main" }) },
+    { method: "GET", url: R, respond: () => json({ default_branch: "main", private: true }) },
     { method: "GET", url: `${R}/git/commits/c1`, respond: () => json({ tree: { sha: "t1" } }) },
     { method: "GET", url: `${R}/git/trees/t1?recursive=1`, respond: () => json({ truncated: false, tree: [
       { path: "MEMORY.md", type: "blob", sha: "s0" },
@@ -1279,6 +1262,15 @@ describe("GitHubStore.snapshot", () => {
     expect(snap.commitSha).toBe("c1");
     expect([...snap.files.keys()].sort()).toEqual(["MEMORY.md", "memories/a.md"]);
     expect(snap.files.get("memories/a.md")).toEqual({ path: "memories/a.md", sha: "s1", content: "A — é\n" });
+    expect(snap.isPrivate).toBe(true);
+  });
+
+  it("isPrivate is false for a public repo, and when the flag is missing", async () => {
+    for (const meta of [{ default_branch: "main", private: false }, { default_branch: "main" }]) {
+      // mockFetch matches by URL prefix, first match wins, so the bare repo URL goes last
+      mockFetch([...repoRoutes().filter((r) => r.url !== R), { method: "GET", url: R, respond: () => json(meta) }]);
+      expect((await new GitHubStore(new GitHub("t"), env.CACHE_KV).snapshot("dav/mem", "")).isPrivate).toBe(false);
+    }
   });
 
   it("project prefix: paths relative to the prefix", async () => {
@@ -1298,7 +1290,7 @@ describe("GitHubStore.snapshot", () => {
 
   it("empty repo → commitSha null, no files", async () => {
     mockFetch([
-      { method: "GET", url: R, respond: () => json({ default_branch: "main" }) },
+      { method: "GET", url: R, respond: () => json({ default_branch: "main", private: true }) },
       { method: "GET", url: `${R}/git/ref/heads/main`, respond: () => json({ message: "Git Repository is empty." }, 409) },
     ]);
     const snap = await new GitHubStore(new GitHub("t")).snapshot("dav/mem", "");
@@ -1309,7 +1301,7 @@ describe("GitHubStore.snapshot", () => {
 describe("GitHubStore.commit", () => {
   it("creates tree (with deletes), commit, and fast-forwards the ref", async () => {
     const { calls } = mockFetch([
-      { method: "GET", url: R, respond: () => json({ default_branch: "main" }) },
+      { method: "GET", url: R, respond: () => json({ default_branch: "main", private: true }) },
       { method: "GET", url: `${R}/git/commits/c1`, respond: () => json({ tree: { sha: "t1" } }) },
       { method: "POST", url: `${R}/git/trees`, respond: () => json({ sha: "t2" }) },
       { method: "POST", url: `${R}/git/commits`, respond: () => json({ sha: "c2", html_url: "https://github.com/dav/mem/commit/c2" }) },
@@ -1329,7 +1321,7 @@ describe("GitHubStore.commit", () => {
 
   it("non-fast-forward → ref_moved", async () => {
     mockFetch([
-      { method: "GET", url: R, respond: () => json({ default_branch: "main" }) },
+      { method: "GET", url: R, respond: () => json({ default_branch: "main", private: true }) },
       { method: "GET", url: `${R}/git/commits/c1`, respond: () => json({ tree: { sha: "t1" } }) },
       { method: "POST", url: `${R}/git/trees`, respond: () => json({ sha: "t2" }) },
       { method: "POST", url: `${R}/git/commits`, respond: () => json({ sha: "c2", html_url: "u" }) },
@@ -1341,7 +1333,7 @@ describe("GitHubStore.commit", () => {
 
   it("empty repo (base null) → initializes README via contents API, then reports ref_moved so the caller retries", async () => {
     const { calls } = mockFetch([
-      { method: "GET", url: R, respond: () => json({ default_branch: "main" }) },
+      { method: "GET", url: R, respond: () => json({ default_branch: "main", private: true }) },
       { method: "PUT", url: `${R}/contents/README.md`, respond: () => json({ commit: { sha: "c1" } }, 201) },
     ]);
     expect(await new GitHubStore(new GitHub("t")).commit("dav/mem", "", null, [{ path: "MEMORY.md", content: "i" }], "m"))
@@ -1364,7 +1356,7 @@ Expected: FAIL (module not found)
 import { GitHub, GitHubError } from "./github";
 
 export interface FileEntry { path: string; sha: string; content: string }
-export interface Snapshot { commitSha: string | null; files: Map<string, FileEntry> }
+export interface Snapshot { commitSha: string | null; isPrivate: boolean; files: Map<string, FileEntry> }
 export interface Change { path: string; content: string | null }
 export type CommitResult = { ok: true; commitSha: string; url: string } | { ok: false; reason: "ref_moved" };
 
@@ -1387,16 +1379,17 @@ const decode = (b64: string) =>
 const encode = (s: string) => btoa(String.fromCharCode(...new TextEncoder().encode(s)));
 
 export class GitHubStore implements Store {
-  private branches = new Map<string, string>();
+  private meta = new Map<string, { branch: string; isPrivate: boolean }>();
   constructor(private gh: GitHub, private cache?: KVNamespace) {}
 
-  private async branch(repo: string) {
-    let b = this.branches.get(repo);
-    if (!b) {
-      b = (await this.gh.request<{ default_branch: string }>("GET", `/repos/${repo}`)).default_branch;
-      this.branches.set(repo, b);
+  private async repoMeta(repo: string) {
+    let m = this.meta.get(repo);
+    if (!m) {
+      const r = await this.gh.request<{ default_branch: string; private?: boolean }>("GET", `/repos/${repo}`);
+      m = { branch: r.default_branch, isPrivate: r.private === true };
+      this.meta.set(repo, m);
     }
-    return b;
+    return m;
   }
 
   private async blob(repo: string, sha: string): Promise<string> {
@@ -1409,13 +1402,13 @@ export class GitHubStore implements Store {
   }
 
   async snapshot(repo: string, prefix: string): Promise<Snapshot> {
-    const branch = await this.branch(repo);
+    const { branch, isPrivate } = await this.repoMeta(repo);
     let commitSha: string;
     try {
       commitSha = (await this.gh.request<{ object: { sha: string } }>("GET", `/repos/${repo}/git/ref/heads/${branch}`)).object.sha;
     } catch (e) {
       if (e instanceof GitHubError && (e.kind === "empty_repo" || e.kind === "not_found" && /empty/i.test(e.message))) {
-        return { commitSha: null, files: new Map() };
+        return { commitSha: null, isPrivate, files: new Map() };
       }
       throw e;
     }
@@ -1434,11 +1427,11 @@ export class GitHubStore implements Store {
       const rel = t.path.slice(prefix.length);
       files.set(rel, { path: rel, sha: t.sha, content: await this.blob(repo, t.sha) });
     }));
-    return { commitSha, files };
+    return { commitSha, isPrivate, files };
   }
 
   async commit(repo: string, prefix: string, base: string | null, changes: Change[], message: string): Promise<CommitResult> {
-    const branch = await this.branch(repo);
+    const { branch } = await this.repoMeta(repo);
     if (base === null) {
       // Git Data API can't write to an empty repo: create README via the contents API, then let the caller retry.
       await this.gh.request("PUT", `/repos/${repo}/contents/README.md`, { message: "init: claude-memory", content: encode(README), branch });
@@ -1496,6 +1489,7 @@ git add src/store.ts test/store.test.ts test/fake-store.ts && git commit -m "fea
   - `getIndexVersioned(store: Store, t: Target): Promise<{ text: string; version: string }>`. Same text as `getIndex`. `version` is the stored `MEMORY.md` blob SHA, or `"none"` when there is no stored index. Every save and delete rewrites the index in the same commit, so the version changes exactly when the scope's memories change. Used for the `since` map (Task 10).
   - `searchMemories(store: Store, targets: Target[], query: string): Promise<{ scope: string; name: string; description: string; snippet: string }[]>`. Max 20 results.
   - `MAX_ATTEMPTS = 3`
+  - Every write (save, delete) throws `OpError("repo_public")` when the snapshot has `isPrivate: false`, before deciding anything. Reads (`readMemories`, `getIndex`, `searchMemories`) don't check.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1515,6 +1509,18 @@ let store: FakeStore;
 beforeEach(() => {
   store = new FakeStore();
   store.put("dav/mem", "README.md", "r"); // non-empty repo
+});
+
+describe("public repo", () => {
+  it("save and delete throw repo_public and write nothing; reads still work", async () => {
+    await saveMemory(store, T, { name: "a", ...base }, NOW);
+    store.publicRepos.add("dav/mem");
+    const before = store.commits.length;
+    await expect(saveMemory(store, T, { name: "b", ...base, description: "another thing" }, NOW)).rejects.toMatchObject({ code: "repo_public" });
+    await expect(deleteMemory(store, T, "a")).rejects.toMatchObject({ code: "repo_public", action: expect.stringMatching(/Change visibility/) });
+    expect(store.commits.length).toBe(before);
+    expect((await readMemories(store, T, ["a"]))[0]).toMatchObject({ name: "a" });
+  });
 });
 
 describe("saveMemory: create", () => {
@@ -1745,6 +1751,10 @@ async function withRetry(
 ): Promise<OpResult> {
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const snap = await store.snapshot(t.repo, t.prefix);
+    if (!snap.isPrivate) {
+      throw new OpError("repo_public", `${t.repo} is public, so anyone can read these memories. Not saved.`,
+        `Make ${t.repo} private: repo Settings → General → Danger Zone → Change visibility. Then save again.`);
+    }
     const d = decide(snap);
     if (!d.changes) return d.result;
     const changes = [...d.changes, { path: "MEMORY.md", content: indexAfter(t, snap, d.changes) }];
@@ -1863,7 +1873,7 @@ git add src/operations.ts test/operations.test.ts && git commit -m "feat: memory
 - Consumes: `GitHub`, `GitHubError`, `RECONNECT_ACTION` (Task 6); `ScopeConfig`, `resolveTarget` (Task 5); `OpError` (Task 5); `Props` (Task 1).
 - Produces:
   - `interface Check { check: string; status: "ok" | "warn" | "fail"; detail: string; action?: string }`
-  - `interface ScopeReach { scope: string; repo: string; reachable: boolean; writable: boolean; reason?: "app_not_installed" | "not_reachable" }`
+  - `interface ScopeReach { scope: string; repo: string; reachable: boolean; writable: boolean; private?: boolean; reason?: "app_not_installed" | "not_reachable" | "repo_public" }`. `private` is present when reachable (from the installation repository list; anything other than `true` → `false`). A public repo is reachable but not writable, with reason `repo_public`.
   - `scopeReachability(gh: GitHub, cfg: ScopeConfig, appSlug: string): Promise<ScopeReach[]>`
   - `runHealth(o: { gh: GitHub; cfg: ScopeConfig; props: Props; appSlug: string; project?: string; now?: number }): Promise<Check[]>`
   - `formatHealth(checks: Check[]): string` gives one line per check: `✓ check — detail` or `⚠/✗ check — detail → action`.
@@ -1887,8 +1897,8 @@ function routes(o: { installs?: unknown[]; repos?: Record<number, unknown[]>; us
       { id: 1, account: { login: "dav" } }, { id: 2, account: { login: "acme-org" } } ] }, 200, RL) },
     { url: /\/user\/installations\/(\d+)\/repositories/, respond: (req: Request) => {
       const id = Number(/installations\/(\d+)/.exec(req.url)![1]);
-      const repos = o.repos?.[id] ?? (id === 1 ? [{ full_name: "dav/claude-memory", permissions: { push: true } }]
-        : [{ full_name: "acme-org/claude-memory", permissions: { push: true } }]);
+      const repos = o.repos?.[id] ?? (id === 1 ? [{ full_name: "dav/claude-memory", private: true, permissions: { push: true } }]
+        : [{ full_name: "acme-org/claude-memory", private: true, permissions: { push: true } }]);
       return json({ repositories: repos }, 200, RL);
     } },
     { url: "https://api.github.com/user", respond: () => o.user === 401 ? json({ message: "Bad credentials" }, 401) : json({ login: "dav" }, 200, RL) },
@@ -1930,7 +1940,7 @@ describe("runHealth", () => {
   it("app not installed on own account → install it yourself", async () => {
     mockFetch(routes({ installs: [{ id: 2, account: { login: "acme-org" } }] }));
     const cs = await runHealth({ gh: new GitHub("t"), cfg, props, appSlug: "dav-claude-memory", now: NOW });
-    expect(byCheck(cs, "scope:general").action).toMatch(/^Install the GitHub App on dav\/claude-memory: https:\/\/github.com\/apps\/dav-claude-memory\/installations\/new/);
+    expect(byCheck(cs, "scope:general").action).toMatch(/^Install the GitHub App on dav\/claude-memory: https:\/\/github.com\/apps\/dav-claude-memory\/installations\/select_target/);
   });
 
   it("repo not in installation → not_reachable with combined action", async () => {
@@ -1944,9 +1954,16 @@ describe("runHealth", () => {
   });
 
   it("read-only access → warn", async () => {
-    mockFetch(routes({ repos: { 2: [{ full_name: "acme-org/claude-memory", permissions: { push: false } }] } }));
+    mockFetch(routes({ repos: { 2: [{ full_name: "acme-org/claude-memory", private: true, permissions: { push: false } }] } }));
     const cs = await runHealth({ gh: new GitHub("t"), cfg, props, appSlug: "s", now: NOW });
     expect(byCheck(cs, "scope:acme")).toMatchObject({ status: "warn", action: expect.stringMatching(/write access/) });
+  });
+
+  it("public repo → fail repo_public with the visibility action", async () => {
+    mockFetch(routes({ repos: { 2: [{ full_name: "acme-org/claude-memory", private: false, permissions: { push: true } }] } }));
+    const cs = await runHealth({ gh: new GitHub("t"), cfg, props, appSlug: "s", now: NOW });
+    expect(byCheck(cs, "scope:acme")).toMatchObject({ status: "fail", detail: "repo_public acme-org/claude-memory",
+      action: expect.stringMatching(/is public.*Change visibility.*Saves to this scope are blocked/) });
   });
 
   it("project checks: ok, unconfigured owner, non-GitHub", async () => {
@@ -1978,7 +1995,7 @@ describe("scopeReachability", () => {
   it("reports per scope", async () => {
     mockFetch(routes({ installs: [{ id: 1, account: { login: "dav" } }] }));
     expect(await scopeReachability(new GitHub("t"), cfg, "s")).toEqual([
-      { scope: "general", repo: "dav/claude-memory", reachable: true, writable: true },
+      { scope: "general", repo: "dav/claude-memory", reachable: true, writable: true, private: true },
       { scope: "acme", repo: "acme-org/claude-memory", reachable: false, writable: false, reason: "app_not_installed" },
     ]);
   });
@@ -2008,10 +2025,10 @@ import { GitHub, GitHubError, RECONNECT_ACTION } from "./github";
 import { resolveTarget, type ScopeConfig } from "./scopes";
 
 export interface Check { check: string; status: "ok" | "warn" | "fail"; detail: string; action?: string }
-export interface ScopeReach { scope: string; repo: string; reachable: boolean; writable: boolean; reason?: "app_not_installed" | "not_reachable" }
+export interface ScopeReach { scope: string; repo: string; reachable: boolean; writable: boolean; private?: boolean; reason?: "app_not_installed" | "not_reachable" | "repo_public" }
 
 type Installation = { id: number; account: { login: string } };
-type InstRepo = { full_name: string; permissions?: { push?: boolean } };
+type InstRepo = { full_name: string; private?: boolean; permissions?: { push?: boolean } };
 
 async function listAll<T>(gh: GitHub, path: string, key: string): Promise<T[]> {
   const out: T[] = [];
@@ -2038,7 +2055,9 @@ export async function scopeReachability(gh: GitHub, cfg: ScopeConfig, _appSlug: 
     }
     const r = reposByInstall.get(inst.id)!.find((x) => x.full_name.toLowerCase() === repo.toLowerCase());
     if (!r) { out.push({ scope, repo, reachable: false, writable: false, reason: "not_reachable" }); continue; }
-    out.push({ scope, repo, reachable: true, writable: Boolean(r.permissions?.push) });
+    const isPrivate = r.private === true;
+    if (!isPrivate) { out.push({ scope, repo, reachable: true, writable: false, private: false, reason: "repo_public" }); continue; }
+    out.push({ scope, repo, reachable: true, writable: Boolean(r.permissions?.push), private: true });
   }
   return out;
 }
@@ -2075,7 +2094,9 @@ export async function runHealth(o: { gh: GitHub; cfg: ScopeConfig; props: Props;
     for (const r of await scopeReachability(o.gh, o.cfg, o.appSlug)) {
       const [owner] = r.repo.split("/");
       const name = `scope:${r.scope}`;
-      if (r.reachable && r.writable) checks.push({ check: name, status: "ok", detail: `ok ${r.repo}` });
+      if (r.reason === "repo_public") checks.push({ check: name, status: "fail", detail: `repo_public ${r.repo}`, action:
+        `${r.repo} is public, so anyone can read these memories. Make it private: repo Settings → General → Danger Zone → Change visibility. Saves to this scope are blocked until then.` });
+      else if (r.reachable && r.writable) checks.push({ check: name, status: "ok", detail: `ok ${r.repo}` });
       else if (r.reachable) checks.push({ check: name, status: "warn", detail: `read-only ${r.repo}`, action: `Ask an owner of ${owner} for write access to ${r.repo}.` });
       else if (r.reason === "app_not_installed") {
         const own = owner!.toLowerCase() === o.props.login.toLowerCase();
@@ -2170,8 +2191,8 @@ function healthyGitHub() {
   mockFetch([
     { url: "https://api.github.com/user/installations?", respond: () => json({ installations: [
       { id: 1, account: { login: "dav" } }, { id: 2, account: { login: "acme-org" } }] }) },
-    { url: "https://api.github.com/user/installations/1/repositories", respond: () => json({ repositories: [{ full_name: "dav/mem", permissions: { push: true } }] }) },
-    { url: "https://api.github.com/user/installations/2/repositories", respond: () => json({ repositories: [{ full_name: "acme-org/claude-memory", permissions: { push: true } }] }) },
+    { url: "https://api.github.com/user/installations/1/repositories", respond: () => json({ repositories: [{ full_name: "dav/mem", private: true, permissions: { push: true } }] }) },
+    { url: "https://api.github.com/user/installations/2/repositories", respond: () => json({ repositories: [{ full_name: "acme-org/claude-memory", private: true, permissions: { push: true } }] }) },
     { url: "https://api.github.com/user", respond: () => json({ login: "dav" }) },
   ]);
 }
@@ -2213,7 +2234,7 @@ describe("callTool", () => {
   it("memory_index skips unreachable scopes but reports them in health", async () => {
     mockFetch([
       { url: "https://api.github.com/user/installations?", respond: () => json({ installations: [{ id: 1, account: { login: "dav" } }] }) },
-      { url: "https://api.github.com/user/installations/1/repositories", respond: () => json({ repositories: [{ full_name: "dav/mem", permissions: { push: true } }] }) },
+      { url: "https://api.github.com/user/installations/1/repositories", respond: () => json({ repositories: [{ full_name: "dav/mem", private: true, permissions: { push: true } }] }) },
       { url: "https://api.github.com/user", respond: () => json({ login: "dav" }) },
     ]);
     const r = await callTool(deps, "memory_index", {});
@@ -2236,8 +2257,8 @@ describe("callTool", () => {
     healthyGitHub();
     const r = JSON.parse((await callTool(deps, "memory_scopes", {})).text);
     expect(r).toEqual([
-      { scope: "general", repo: "dav/mem", reachable: true, writable: true },
-      { scope: "acme", repo: "acme-org/claude-memory", reachable: true, writable: true },
+      { scope: "general", repo: "dav/mem", reachable: true, writable: true, private: true },
+      { scope: "acme", repo: "acme-org/claude-memory", reachable: true, writable: true, private: true },
     ]);
   });
 
@@ -2251,6 +2272,13 @@ describe("callTool", () => {
     store.snapshot = async () => { const { GitHubError } = await import("../src/github"); throw new GitHubError("Bad credentials", 401, "unauthorized"); };
     const r = await save({ name: "a" });
     expect(JSON.parse(r.text)).toMatchObject({ error: "reauth_required", retryable: true });
+  });
+
+  it("repo_public surfaces as a non-retryable error with the action", async () => {
+    store.publicRepos.add("dav/mem");
+    const r = await save({ name: "a" });
+    expect(r.isError).toBe(true);
+    expect(JSON.parse(r.text)).toMatchObject({ error: "repo_public", retryable: false, action: expect.stringMatching(/Change visibility/) });
   });
 
   it("unknown tool", async () => {
@@ -2998,7 +3026,7 @@ git add src/index.ts test/wiring.test.ts test/auth.test.ts && git commit -m "fea
 
 **Interfaces:**
 - Consumes: `GitHubStore` (Task 7), `GitHub` (Task 6), operations (Task 8).
-- Requires these env vars: `GITHUB_TEST_TOKEN` (a token with contents:write on the test repo; `gh auth token` works, since the store doesn't care what kind of token it is) and `GITHUB_TEST_REPO=dav/claude-memory-test`. Without them, the suite is skipped.
+- Requires these env vars: `GITHUB_TEST_TOKEN` (a token with contents:write on the test repo; `gh auth token` works, since the store doesn't care what kind of token it is) and `GITHUB_TEST_REPO=davlion/claude-memory-test`. Without them, the suite is skipped.
 
 - [ ] **Step 1: Write the test**
 
@@ -3070,8 +3098,8 @@ run("live GitHub", () => {
 
 - [ ] **Step 2: Run against the real test repo**
 
-Run: `GITHUB_TEST_TOKEN=$(gh auth token) GITHUB_TEST_REPO=dav/claude-memory-test npx vitest run test/integration`
-Expected: 4 passed. The first run against an empty repo also exercises the README init path. Then check on github.com that `dav/claude-memory-test` has `README.md`, a coherent `MEMORY.md`, and commits with trailers.
+Run: `GITHUB_TEST_TOKEN=$(gh auth token) GITHUB_TEST_REPO=davlion/claude-memory-test npx vitest run test/integration`
+Expected: 4 passed. The first run against an empty repo also exercises the README init path. Then check on github.com that `davlion/claude-memory-test` has `README.md`, a coherent `MEMORY.md`, and commits with trailers.
 
 - [ ] **Step 3: Confirm the default run skips it**
 
@@ -3098,7 +3126,7 @@ git add test/integration && git commit -m "test: live GitHub integration for sto
 npx wrangler kv namespace create OAUTH_KV
 npx wrangler kv namespace create CACHE_KV
 ```
-Paste the printed ids into the top-level `kv_namespaces` in `wrangler.jsonc`. Set `PUBLIC_URL` to `https://claude-memory-staging.<sub>.workers.dev`, and `GITHUB_APP_SLUG` to the slug recorded in Task 0.
+Paste the printed ids into the top-level `kv_namespaces` in `wrangler.jsonc`. Set `PUBLIC_URL` to `https://claude-memory-staging.david-lion.workers.dev`, and `GITHUB_APP_SLUG` to the slug recorded in Task 0.
 
 - [ ] **Step 2: Set the secrets** (the user pastes the values; never echo them)
 
@@ -3112,27 +3140,27 @@ npx wrangler secret put COOKIE_ENCRYPTION_KEY
 
 ```bash
 npm test && npm run deploy:staging
-curl -sS https://claude-memory-staging.<sub>.workers.dev/health
-curl -sS -o /dev/null -w '%{http_code}\n' -X POST https://claude-memory-staging.<sub>.workers.dev/mcp
+curl -sS https://claude-memory-staging.david-lion.workers.dev/health
+curl -sS -o /dev/null -w '%{http_code}\n' -X POST https://claude-memory-staging.david-lion.workers.dev/mcp
 ```
 Expected: `{"ok":true,"version":"0.1.0","min_hook_version":"0.1.0"}`, then `401`.
 
 - [ ] **Step 4: Connect from Claude Code** (local, separate from claude.ai)
 
 ```bash
-claude mcp add --transport http claude-memory-staging https://claude-memory-staging.<sub>.workers.dev/mcp
+claude mcp add --transport http claude-memory-staging https://claude-memory-staging.david-lion.workers.dev/mcp
 ```
-Then, in a `claude` session, run `/mcp` → claude-memory-staging → Authenticate. A browser opens: Allow → GitHub approve. Back in the session, ask: "call memory_index with project dav-test-client/sample-app".
+Then, in a `claude` session, run `/mcp` → claude-memory-staging → Authenticate. A browser opens: Allow → GitHub approve. Back in the session, ask: "call memory_index with project davlion-test-client/sample-app".
 
 Expected:
-- The Health section: all ✓, two scopes, and the project mapped to `dav-test-client/claude-memory/projects/sample-app/`.
+- The Health section: all ✓, two scopes, and the project mapped to `davlion-test-client/claude-memory/projects/sample-app/`.
 - Then the indexes.
 
 Then ask for a test save to `general` and confirm the commit on github.com.
 
 - [ ] **Step 5: Connect from claude.ai** at Settings → Connectors → Add custom connector
   - Name: `claude-memory-staging`
-  - URL: `https://claude-memory-staging.<sub>.workers.dev/mcp`
+  - URL: `https://claude-memory-staging.david-lion.workers.dev/mcp`
   - OAuth: leave at the defaults (CIMD or automatic registration).
 
   Connect, then Allow, then approve on GitHub. In a new chat, ask "what's in my memory index?" and confirm the same output.
@@ -3180,7 +3208,7 @@ cd ~/src/claude-memory-mcp && git add docs/superpowers/specs/2026-10-13-cloud-me
 ## Done when
 
 - `npm test` passes in `claude-memory-cloud`. That covers all unit tests, the wiring test, and the full OAuth flow test.
-- The live integration suite passes against `dav/claude-memory-test`.
+- The live integration suite passes against `davlion/claude-memory-test`.
 - Staging is deployed. `/health` responds, and `/mcp` returns 401 without a token.
 - Both the Claude Code CLI and claude.ai connect via OAuth, `memory_index` shows healthy Health output, and a test save lands as a commit with trailers.
 - The spec reflects the deviations.
