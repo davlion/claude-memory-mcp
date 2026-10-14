@@ -78,6 +78,11 @@ GitHub:  dav/claude-memory            (scope: general;  projects/<repo>/ for dav
 
 The pure units (`memory`, `secrets`, `remote`) contain no I/O. `store` is the only unit that talks to the Git Data API.
 
+### Languages
+
+- **Worker: TypeScript.** Cloudflare's OAuth provider, MCP transport (`agents`), and Workers test pool are JavaScript-only, and they cover the security-sensitive auth code. Python Workers lack the OAuth library.
+- **Everything local: Python and shell.** That covers the hooks, `setup.sh`, the migration script, and the e2e test runner, matching this repo. Hooks are kept light so they start fast.
+
 ### Infrastructure
 
 - **Cloudflare:** a free account with 2FA. Workers on the free plan, KV for OAuth grants and the search cache, deployed with `wrangler`. Default URL `*.workers.dev`; no custom domain needed.
@@ -514,7 +519,15 @@ Outbox entry format: a fixture-based round-trip test (memory frontmatter + `outb
 | S12 | Preflight: break one thing at a time — revoke the GitHub token, uninstall the app from the test org, remove the user from the test org, point to a missing repo, block the Worker URL, turn auto-memory on, delete the routing rule, corrupt the scope map | H1 (all), H5 (server-side ones) | exactly one warning line per broken item, naming the right action; silent once fixed |
 | S12h | Preflight with everything healthy | all | no health output at all |
 
-**Verification:** pass/fail is decided by checking the repos with `gh api`: expected commit, file, and trailers. For S0 and S4, also confirm that no local auto-memory files appeared. For S4n and S8, confirm no commit. Scripted hosts run a driver script that issues the prompt and then checks. Manual hosts follow a checklist, verified the same way.
+**Verification:** pass/fail is decided by checking the repos with `gh api`: expected commit, file, and trailers. For S0 and S4, also confirm that no local auto-memory files appeared. For S4n and S8, confirm no commit. **Test runner** (`tests/e2e/run.py`): for each scripted host and scenario, it:
+
+1. runs `claude -p "<prompt>"` once, locally or over SSH, in the right directory
+2. checks the outcome with `gh api` (which repo and path, trailers, no local memory file, outbox state)
+3. writes a PASS/FAIL row
+
+It checks **outcomes, never Claude's wording**, because replies vary from run to run. Routing prompts (S2/S4/S5) run 3× each per host, and a scenario passes only if all runs pass.
+
+Manual hosts follow a checklist, verified the same way.
 
 **Fixed prompt set:** ~10 phrasings covering S2, S4, and S5, kept in the repo (`tests/e2e/prompts.json`) so results are comparable across hosts and runs. The first run uses layers A + C only, to decide whether layer B is needed. The second run adds B.
 
