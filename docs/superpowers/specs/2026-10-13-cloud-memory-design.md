@@ -610,6 +610,15 @@ Manual hosts follow a checklist, verified the same way.
    - Local auto-memory folders are left in place (not deleted) as a backup.
 6. Onboard the client: an org owner installs the app on their `claude-memory` repo; add the scope; redeploy.
 
+### Documentation
+
+Shipped in the `claude-memory-cloud` repo, written for other developers as well as the current setup:
+
+- **`docs/QUICKSTART.md`:** step-by-step setup: memory repo, Cloudflare account, GitHub App, deploy, connect, per-machine setup, verification, adding a client org, and a development/test appendix.
+- **`docs/FAQ.md`:** what it is, security and privacy, day-to-day behavior, operations.
+
+Drafts live in this repo at `docs/cloud-memory/` until `claude-memory-cloud` exists. Plan 1 Task 1 moves them there. Each later plan updates them when it changes user-visible behavior, and Plan 4 checks every step against the real deployment.
+
 ## 11. Open items to resolve during build
 
 - Confirm that `workers-oauth-provider` encrypts grant props with the issued token (§4).

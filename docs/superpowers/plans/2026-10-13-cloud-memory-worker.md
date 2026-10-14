@@ -113,7 +113,7 @@ claude-memory-cloud/
 
 ### Task 0: One-time setup (user, guided — no code)
 
-The user does these steps; the agent walks them through and records the outputs. **No later task can deploy or run integration tests without them.**
+The user does these steps; the agent walks them through and records the outputs. The user-facing version of these steps is `docs/cloud-memory/QUICKSTART.md` in `claude-memory-mcp` (Parts 2–4 and the Appendix); keep the two consistent, and fix the Quickstart wherever a step turns out to be wrong. **No later task can deploy or run integration tests without them.**
 
 - [ ] **Step 1: Cloudflare account**
   1. Sign up at https://dash.cloudflare.com/sign-up and verify the email.
@@ -400,7 +400,15 @@ it("mockFetch intercepts outbound fetch from worker code", async () => {
 Run: `cp .dev.vars.example .dev.vars` (skip this if Task 0 already created `.dev.vars`), then `npx vitest run test/smoke.test.ts && npx tsc --noEmit`
 Expected: 2 passed, and no type errors.
 
-- [ ] **Step 8: Write `README.md`** (short: what the repo is, `npm test`, deploy commands, and a pointer to the spec) **and commit**
+- [ ] **Step 8: Move the docs drafts into this repo**
+
+```bash
+mkdir -p docs
+cp ~/src/claude-memory-mcp/docs/cloud-memory/QUICKSTART.md ~/src/claude-memory-mcp/docs/cloud-memory/FAQ.md docs/
+```
+In both copies, delete the "This file moves to the `claude-memory-cloud` repo…" sentence from the Draft note. In `claude-memory-mcp`, replace each draft with a single line pointing to the new location, and commit that there.
+
+- [ ] **Step 9: Write `README.md`** (short: what the repo is, a link to `docs/QUICKSTART.md` and `docs/FAQ.md`, `npm test`, deploy commands, and a pointer to the spec) **and commit**
 
 ```bash
 git add -A && git commit -m "chore: scaffold claude-memory-cloud worker"
