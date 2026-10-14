@@ -2294,6 +2294,7 @@ describe("createServer", () => {
     expect(INSTRUCTIONS).toContain("memory_index");
     expect(INSTRUCTIONS).toContain("source");
     expect(INSTRUCTIONS).toContain("since");
+    expect(INSTRUCTIONS).toContain("summarized");
   });
 });
 ```
@@ -2315,6 +2316,8 @@ Save lasting facts to one of three scopes: the user (scope "general"), a client 
 Always pass source: a short description of where you are running, e.g. "claude-code on <hostname>", "claude-code cloud", "claude.ai chat", "claude mobile".
 
 After every save attempt, end with exactly one of: "saved to <scope>", "queued in outbox for <scope>", or "not saved: <reason>". If a save fails with a retryable error (unavailable, reauth_required) tell the user plainly; in local Claude Code follow the outbox rule in the user's CLAUDE.md; elsewhere there is no outbox, so say the memory was not saved.
+
+If the memory index is no longer in your context (for example after the conversation was summarized), call memory_index again.
 
 memory_index ends with a "Since" map. Pass it as since on every later memory_read, memory_search, memory_save, and memory_delete call. If a result says "Memory changed since your index", treat the index it includes as replacing your copy for that scope, and use its new Since map from then on.
 

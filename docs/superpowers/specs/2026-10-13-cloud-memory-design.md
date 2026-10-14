@@ -303,6 +303,8 @@ Covers local Code on the Mac and VMs. Distributed to the VMs as part of setup.
 >
 > If it's unclear, ask in one line ("general, <client>, or this project?"). With no git remote, project-specific facts can't be saved; say so. After saving, state the scope it went to.
 >
+> After context compaction (the session-start hook says so), call `memory_index` again, as at session start.
+>
 > After each successful `memory_index`, write its result to `~/.claude/memory-cache/<owner__repo or _none>.md` (§7 G). If `memory_index` fails, use the session-start snapshot, say it is stale and give its date, and don't save, update, or delete from it.
 >
 > If `memory_save` fails because the connector is unavailable (unreachable, auth expired, upstream error, or the tools aren't loaded), write the memory to the outbox (`~/.claude/memory-outbox/`, format in §7 E) and say "queued in outbox for <scope>". Never drop it silently. If the session-start hook reports queued memories and the connector works, flush them.
@@ -336,6 +338,8 @@ Sent by the Worker wherever the connector is enabled, so they reach cloud sessio
 > - one codebase (`project`, with its origin remote)
 >
 > If the scope is unclear, ask in one line. Never save secrets. Prefer updating an existing memory (pass its `version`) over creating a new one. After saving, tell the user the scope. If `memory_index` lists conflicts, offer to reconcile them.
+>
+> If the memory index is no longer in your context (for example after the conversation was summarized), call `memory_index` again.
 >
 > `memory_index` ends with a `Since` map. Pass it as `since` on later memory tool calls. If a result says "Memory changed since your index", replace your copy of that scope's index with the one given and use the new map.
 >
@@ -434,6 +438,15 @@ Gives a session some memories when the connector is unavailable, or when Claude 
   - If `memory_index` fails, Claude says the memories shown are from the snapshot, with its date.
 - **Not covered:** cloud sessions and claude.ai chat, which have no persistent local disk.
 
+### H. Compaction counts as a session start
+
+When a long session is compacted, the summary may drop the memory index and the `Since` map. Claude then knows less than a new session would, and nothing tells it so. Compaction is therefore treated as a second session start.
+
+- **Local Claude Code (Mac and VMs):** the `SessionStart` hook is registered for all sources (`startup`, `resume`, `clear`, `compact`), with no matcher. On source `compact` it does everything it does at startup (outbox count, preflight, snapshot) and adds: "Context was compacted. Call `memory_index` again (with `project` as at session start) and use its result and `Since` map from now on."
+- **Cloud sessions and chat:** there are no local hooks, so the rule is in the server instructions (C): if you no longer have the memory index in context (for example after the conversation was summarized), call `memory_index` again.
+- **Layer A** includes the same rule.
+- `PreCompact` isn't used. Nothing needs saving before compaction, because memories are already saved when they're made.
+
 ## 8. Error handling
 
 | Condition | Behavior |
@@ -496,6 +509,8 @@ Shell-level tests of the `UserPromptSubmit` script:
 
 Shell-level tests of the `SessionStart` outbox hook:
 
+- source `compact` → the same output as `startup`, plus the re-index line; source `startup` → no re-index line
+
 - empty or missing outbox → no output
 - entries counted overall and for the current project (by origin remote)
 - non-git directory → total only
@@ -557,6 +572,7 @@ Outbox entry format: a fixture-based round-trip test (memory frontmatter + `outb
 | S11e | S11 continued: with the connector still unavailable, start a new session in a repo that has a snapshot | H1, H3 | the snapshot's memories appear, labeled stale with their date; Claude says the connector is unavailable |
 | S11f | Connector healthy, new session | H1 | `~/.claude/memory-cache/<key>.md` is rewritten with a newer `as_of` |
 | S13 | Two running sessions: H1 saves a memory; H3 (already running) then makes any memory tool call | H1 + H3 | H3's result includes the change notice with the new memory, and Claude mentions or uses it |
+| S14 | Long session: force compaction (`/compact`), then ask about a memory saved at the start | H1, H5 | Claude calls `memory_index` again after compaction (H1: prompted by the hook; H5: by the server instructions) and answers correctly |
 | S11d | Connector unavailable in a cloud session and in chat | H5, H6 | "not saved: <reason>" announced; nothing queued |
 | S12 | Preflight: break one thing at a time — revoke the GitHub token, uninstall the app from the test org, remove the user from the test org, point to a missing repo, block the Worker URL, turn auto-memory on, delete the routing rule, corrupt the scope map | H1 (all), H5 (server-side ones) | exactly one warning line per broken item, naming the right action; silent once fixed |
 | S12h | Preflight with everything healthy | all | no health output at all |
@@ -582,7 +598,7 @@ Manual hosts follow a checklist, verified the same way.
 3. Add the staging connector in claude.ai. On the Mac and VMs, run the **setup script** (`claude-memory-cloud/setup.sh`, idempotent). It:
    - turns auto-memory off
    - adds the routing rule to `~/.claude/CLAUDE.md`, with a marker line
-   - installs the `UserPromptSubmit` hook (B) and the `SessionStart` outbox + snapshot + preflight hook (E, F, G)
+   - installs the `UserPromptSubmit` hook (B) and the `SessionStart` outbox + snapshot + preflight hook (E, F, G, H), registered for all sources including `compact`
    - writes `~/.claude/memory-scopes.json` and the Worker URL
    - runs the local preflight once and prints the result In the cloud environment: set the auto-memory env var. Run Level 3, then Level 4.
 4. Deploy production.
