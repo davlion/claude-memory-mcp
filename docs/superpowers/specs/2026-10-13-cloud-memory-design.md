@@ -192,7 +192,8 @@ All tools take `scope`: `general`, a client name (a key in `SCOPES`), or `projec
 | Tool | Parameters | Returns |
 |---|---|---|
 | `memory_scopes` | — | `[{scope, repo, reachable, writable, reason?}]`, where `reason` is `app_not_installed` or `no_user_access` |
-| `memory_index` | `scopes?: string[]` (default: all reachable), `project?` | Per scope (and the project, if given), the `MEMORY.md` content, including the Conflicts section. An unknown project with no folder yet → empty index, not an error |
+| `memory_index` | `scopes?: string[]` (default: all configured), `project?` | A `health` block (§7 F) followed by, per reachable scope (and the project, if given), the `MEMORY.md` content including the Conflicts section. An unknown project with no folder yet → empty index, not an error |
+| `memory_health` | `project?` | The `health` block only. Used on demand ("is memory working?") |
 | `memory_read` | `scope`, `names: string[]` (max 20) | Per name, `{name, content, version}` or `{name, error:"not_found"}`. `version` is the file's blob SHA |
 | `memory_search` | `query`, `scopes?` | `[{scope, name, description, snippet}]`, max 20. Case-insensitive substring/term match over name, description, and body |
 | `memory_save` | `scope` (default `general`), `name`, `description`, `type`, `body`, `version?`, `force?: boolean` | `{status, name, commit_url?, similar?, conflict_file?, pattern?}` |
@@ -344,7 +345,7 @@ For when Claude works but the memory connector doesn't: the Worker or GitHub is 
   ```
 
 - **Marker:** a non-empty outbox is the dirty flag. Entries carry their project, so the state is visible per project; no separate flag file.
-- **`SessionStart` hook** (user-level, Mac and VMs): counts entries. If there are any, it emits `additionalContext`: "N memories queued in outbox (M for this project). Once `memory_index` succeeds, flush them with `memory_save`/`memory_delete`, oldest first, and delete each entry only after a successful result." It outputs nothing when the outbox is empty, runs in under 100 ms, and needs no network.
+- **`SessionStart` hook** (user-level, Mac and VMs): counts entries. If there are any, it emits `additionalContext`: "N memories queued in outbox (M for this project). Once `memory_index` succeeds, flush them with `memory_save`/`memory_delete`, oldest first, and delete each entry only after a successful result." It outputs nothing when the outbox is empty. The same hook runs the local preflight checks (§7 F).
 - **Flush:** Claude replays each entry through the normal tools, so secret scanning, the similarity check, and conflict handling all apply. A stale `version` produces a conflict copy rather than overwriting. An entry that gets a non-retryable result (`rejected_secret`, `invalid`, `no_memory_repo_for_owner`) is kept and reported to the user rather than deleted.
 - **Why Claude flushes rather than a script:** the connector authenticates through claude.ai, and writing to GitHub directly would bypass the server's checks.
 - **Not covered:**
@@ -352,6 +353,49 @@ For when Claude works but the memory connector doesn't: the Worker or GitHub is 
   - claude.ai chat: there is no local disk.
   - Reads while the connector is unavailable fail visibly. There is no local index cache in v1.
 - **Precedent:** the `claude-memory-mcp` pending-shares queue, which retries unreachable VMs on the next `sync_now`.
+
+### F. Preflight health check
+
+At session start, two halves check everything. **Every failed check reports the action the user should take**, not just what's wrong.
+
+Authentication lives in claude.ai, not in the local shell. A local hook therefore cannot check the GitHub token; the server does. `gh` login in the shell is **not** needed for memory to work. It is only needed for the migration and e2e test scripts, which check it themselves.
+
+#### Server half: `health` block in `memory_index` / `memory_health`
+
+Each check returns `{check, status: ok|warn|fail, detail, action?}`. `action` is required whenever status isn't `ok`.
+
+| Check | Fail / warn condition | Action reported to the user |
+|---|---|---|
+| `github_token` | refresh failed / revoked | "Reconnect: claude.ai → Settings → Connectors → claude-memory → Disconnect, then Connect, and approve on GitHub." |
+| `github_token` (warn) | expires within 15 min and no refresh token | "Memory sign-in expires soon; reconnect the claude-memory connector in claude.ai Settings → Connectors." |
+| `rate_limit` (warn) | < 10% remaining | "GitHub rate limit low (N left, resets HH:MM). Saves may be queued until then; no action needed." |
+| `scope:<name>` | `app_not_installed` | General: "Install the GitHub App on `<repo>`: <install link> → Only select repositories → `claude-memory`." Client: "Ask an owner of `<org>` to install the app: <install link>." |
+| `scope:<name>` | `no_user_access` | "Your GitHub account `<login>` has no access to `<repo>`. Ask an owner of `<org>` to add you, or check you're signed in to the right GitHub account (reconnect the connector)." |
+| `scope:<name>` | repo missing | "Create the private repo `<repo>` (it can be empty); the server initializes it on first write." |
+| `project` | `no_memory_repo_for_owner` | "No memory repo is configured for `<owner>`. Project memories for this repo can't be saved. To enable: create `<owner>/claude-memory`, install the app on it, and add a scope for `<owner>`." |
+| `project` | `unsupported_remote` | "This repo's origin isn't on GitHub; project memories aren't available here." |
+| `github_api` | 5xx / timeout | "GitHub is having problems (status page: githubstatus.com). Saves will be queued in the outbox; nothing to do." |
+
+#### Local half: added to the `SessionStart` hook (Mac and VMs)
+
+| Check | Fail condition | Action reported to the user |
+|---|---|---|
+| Worker reachable | `GET <worker>/health` fails within 1 s | "Can't reach the memory server `<url>`. Check this machine's network/DNS (`curl -sS <url>/health`). Saves will be queued in the outbox." |
+| Auto-memory off | `autoMemoryEnabled` not `false` in effective settings, and `CLAUDE_CODE_DISABLE_AUTO_MEMORY` unset | "Built-in auto-memory is on, so memories may go to the local folder. Add `\"autoMemoryEnabled\": false` to `~/.claude/settings.json`." |
+| Routing rule present | marker line missing from `~/.claude/CLAUDE.md` | "The memory routing rule is missing from `~/.claude/CLAUDE.md`; rerun the claude-memory-cloud setup script." |
+| Scope map | `~/.claude/memory-scopes.json` missing or invalid | "Scope map missing or invalid; rerun the setup script (or fix `~/.claude/memory-scopes.json`)." |
+| Outbox | entries present (as §7 E) | "N memories queued; they'll be flushed once the server responds." If any entry is older than 7 days: "Oldest queued memory is D days old; check the server health above." |
+| Hook version | installed hook older than the version the Worker reports at `/health` | "Memory hooks are out of date; rerun the setup script." |
+
+The hook's network budget is one `GET` with a 1 s timeout. Its total runtime must stay under 1.5 s. The Worker's `/health` is unauthenticated and returns only `{ok, version, min_hook_version}`.
+
+#### Reporting rule
+
+- **Healthy → silent.**
+- **Otherwise →** at session start, Claude says one line per problem, each with its action, e.g.:
+  > ⚠ memory: `acme` unreachable — ask an owner of acme-org to install the app: <link>. Saves to `acme` will be queued.
+- After that, Claude doesn't bring up health again unless asked or unless the status changes.
+- If `memory_index` returns no result at all (the connector isn't loaded or can't be reached), Claude reports: "⚠ memory connector unavailable — check claude.ai → Settings → Connectors → claude-memory is connected, and run `/mcp` to see if it's enabled in this session. Saves will be queued."
 
 ## 8. Error handling
 
@@ -396,6 +440,8 @@ Uses the real throwaway repo `dav/claude-memory-test`. A scripted MCP client (Ty
 - search finds a just-written memory
 - secret rejected, with no commit
 - `Memory-Source` and `Memory-Scope` trailers present
+- `health` block for each server-side check: ok, and each fail/warn condition (expired token, app not installed, no user access, missing repo, unconfigured project owner, low rate limit via mocked headers), each with a non-empty `action`
+- `/health` endpoint returns `{ok, version, min_hook_version}` with no auth
 - **Concurrency:** two simultaneous updates with the same `version` → exactly one `updated` and one `conflict`
 - Two simultaneous creates of different names → both land; the index contains both
 - Project scope: save, read, and index for `dav/<test-repo>` land under `projects/<test-repo>/` with their own `MEMORY.md`; the root index is unchanged
@@ -417,7 +463,9 @@ Shell-level tests of the `SessionStart` outbox hook:
 - entries counted overall and for the current project (by origin remote)
 - non-git directory → total only
 - malformed entry → counted and flagged, not crashing
-- runs under 100 ms
+- each local preflight check broken in turn (Worker unreachable via a bad URL, auto-memory on, routing marker missing, scope map missing or invalid, stale outbox entry, hook older than `min_hook_version`) → one line with the expected action
+- all healthy → no output
+- total runtime under 1.5 s with the Worker unreachable (timeout respected)
 
 Outbox entry format: a fixture-based round-trip test (memory frontmatter + `outbox:` block) shared with the flush instructions.
 
@@ -463,6 +511,8 @@ Outbox entry format: a fixture-based round-trip test (memory frontmatter + `outb
 | S11b | S11 continued: restore the connector, start a new session | H1, H3 | hook reports the queued count; Claude flushes; commit lands; outbox empty |
 | S11c | Queued update whose `version` went stale (memory edited from another host before the flush) | H1 + H3 | flush produces a conflict copy, not an overwrite; outbox entry removed |
 | S11d | Connector unavailable in a cloud session and in chat | H5, H6 | "not saved: <reason>" announced; nothing queued |
+| S12 | Preflight: break one thing at a time — revoke the GitHub token, uninstall the app from the test org, remove the user from the test org, point to a missing repo, block the Worker URL, turn auto-memory on, delete the routing rule, corrupt the scope map | H1 (all), H5 (server-side ones) | exactly one warning line per broken item, naming the right action; silent once fixed |
+| S12h | Preflight with everything healthy | all | no health output at all |
 
 **Verification:** pass/fail is decided by checking the repos with `gh api`: expected commit, file, and trailers. For S0 and S4, also confirm that no local auto-memory files appeared. For S4n and S8, confirm no commit. Scripted hosts run a driver script that issues the prompt and then checks. Manual hosts follow a checklist, verified the same way.
 
@@ -474,7 +524,12 @@ Outbox entry format: a fixture-based round-trip test (memory frontmatter + `outb
 
 1. User creates the Cloudflare account (2FA) and the GitHub App (guided). User creates `dav/claude-memory`, `dav/claude-memory-test`, and the test org.
 2. Build the Worker. Levels 1 and 2 green on staging.
-3. Add the staging connector in claude.ai. On the Mac and VMs: turn auto-memory off and install layers A and B and the outbox `SessionStart` hook (E). In the cloud environment: set the auto-memory env var. Run Level 3, then Level 4.
+3. Add the staging connector in claude.ai. On the Mac and VMs, run the **setup script** (`claude-memory-cloud/setup.sh`, idempotent). It:
+   - turns auto-memory off
+   - adds the routing rule to `~/.claude/CLAUDE.md`, with a marker line
+   - installs the `UserPromptSubmit` hook (B) and the `SessionStart` outbox + preflight hook (E, F)
+   - writes `~/.claude/memory-scopes.json` and the Worker URL
+   - runs the local preflight once and prints the result In the cloud environment: set the auto-memory env var. Run Level 3, then Level 4.
 4. Deploy production.
 5. **One-time migration** of existing local memories:
    - Source: the `claude-memory-mcp` cache (`~/.claude-memories/<vm>/<project-slug>/memory/`), which holds the Mac's and the VMs' memories.
