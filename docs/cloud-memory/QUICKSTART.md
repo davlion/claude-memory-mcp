@@ -104,7 +104,7 @@ The GitHub App is how the server gets access to your memory repo, **and only tha
 
 ## Part 4 — Install the app on your memory repo
 
-1. Go to `https://github.com/apps/<slug>/installations/new`.
+1. Go to `https://github.com/apps/<slug>/installations/select_target`. (This link always shows the account picker. The similar `…/installations/new` link skips it and opens an existing installation's settings once the app is installed anywhere.)
 2. Choose your personal account.
 3. Select **Only select repositories** → `claude-memory`.
 4. Click **Install**.
@@ -200,7 +200,7 @@ It's safe to run again.
 To keep a client's memories in the client's own GitHub org:
 
 1. **The client** (an org owner) creates a private, empty repo `<client-org>/claude-memory`. They add you to it if you don't already have access.
-2. **The client** installs your app: `https://github.com/apps/<slug>/installations/new` → their org → **Only select repositories** → `claude-memory`. No secrets change hands.
+2. **The client** installs your app: `https://github.com/apps/<slug>/installations/select_target` → their org → **Only select repositories** → `claude-memory`. No secrets change hands.
 3. **You** add the scope to `SCOPES` in `wrangler.jsonc`, e.g. `{"general": "<you>/claude-memory", "acme": "acme-org/claude-memory"}`, then run `npm run deploy:production`.
 4. **You** add the scope to the local scope map by rerunning `./setup.sh` on each machine.
 

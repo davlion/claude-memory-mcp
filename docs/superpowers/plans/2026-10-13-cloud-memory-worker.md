@@ -143,7 +143,7 @@ The user does these steps; the agent walks them through and records the outputs.
   - **Do not** generate a private key; it isn't needed.
 
 - [ ] **Step 4: Install the app**
-  1. Go to `https://github.com/apps/<slug>/installations/new`.
+  1. Go to `https://github.com/apps/<slug>/installations/select_target`.
   2. Install on **dav** → Only select repositories → `claude-memory-test`, `claude-memory`.
   3. Install on **dav-test-client** → Only select repositories → `claude-memory`.
 
@@ -1924,7 +1924,7 @@ describe("runHealth", () => {
     const cs = await runHealth({ gh: new GitHub("t"), cfg, props, appSlug: "dav-claude-memory", now: NOW });
     expect(byCheck(cs, "scope:acme")).toMatchObject({ status: "fail", detail: expect.stringContaining("app_not_installed") });
     expect(byCheck(cs, "scope:acme").action).toBe(
-      "Ask an owner of acme-org to install the app on acme-org/claude-memory: https://github.com/apps/dav-claude-memory/installations/new");
+      "Ask an owner of acme-org to install the app on acme-org/claude-memory: https://github.com/apps/dav-claude-memory/installations/select_target");
   });
 
   it("app not installed on own account → install it yourself", async () => {
@@ -2050,7 +2050,7 @@ function fmtDuration(ms: number) {
 
 export async function runHealth(o: { gh: GitHub; cfg: ScopeConfig; props: Props; appSlug: string; project?: string; now?: number }): Promise<Check[]> {
   const now = o.now ?? Date.now();
-  const install = `https://github.com/apps/${o.appSlug}/installations/new`;
+  const install = `https://github.com/apps/${o.appSlug}/installations/select_target`;
   const checks: Check[] = [];
   try {
     await o.gh.request("GET", "/user");
