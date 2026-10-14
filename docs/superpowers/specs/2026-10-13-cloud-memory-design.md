@@ -88,7 +88,7 @@ The pure units (`memory`, `secrets`, `remote`, `render`) contain no I/O. `store`
 ### Infrastructure
 
 - **Cloudflare:** an account with 2FA. Workers, KV for OAuth grants and the snapshot cache, deployed with `wrangler`. Default URL `*.workers.dev`; no custom domain needed.
-- **Cloudflare plan:** the owner runs Workers Paid. The Worker stays within Free's limits (50 subrequests, 1,000 KV writes/day, 10 ms CPU), so self-hosters can use Free.
+- **Cloudflare plan:** **Workers Paid is required.** Measured CPU per call is 29–110 ms (2026-10-14, staging; ~30 ms fixed overhead), above Free's 10 ms. The Worker otherwise stays within Free's limits (50 subrequests, 1,000 KV writes/day), so Free becomes possible only if the per-call overhead is cut.
 - **Two deployments:**
   - `claude-memory-staging`, mapped to test repos
   - `claude-memory`, mapped to real repos
@@ -761,5 +761,5 @@ Folded into §3–§9 by Plan 1b (`docs/superpowers/plans/2026-10-14-cloud-memor
 - Confirm that turning auto-memory off removes the built-in memory instruction from the system prompt, not just the file loading (§7, test S0).
 - Confirm `CLAUDE_CODE_DISABLE_AUTO_MEMORY` set as a cloud environment variable takes effect in cloud sessions (§7, test S0 on H5).
 - Resolved: absolute grant cap enforced in `tokenExchangeCallback` (library has none with idle TTL).
-- Open: CPU medians at 1/50/200 memories were not measured in Plan 1b (informational on Workers Paid); record them in the FAQ for Free-plan self-hosters, and slim the hot path if any exceeds ~5 ms.
+- Resolved/open: CPU measured on staging 2026-10-14 (memory_index cold 78–109 ms, warm 29–91 ms; memory_search at 200 memories 110 ms), recorded in the FAQ. Exceeds Free's 10 ms, so Workers Paid is required. Optional follow-up (Plan 4): cut per-call overhead (build the MCP server and schemas once per isolate, cache health results briefly) if Free support is wanted.
 - Open (known gap): a suspended installation still passes the scope reachability check (`suspended_at` is not checked), so reads 404 under a generic index failure. Fix pending: fail the scope with "installation suspended; ask the owner to unsuspend" and give a specific `not_reachable` action on index 404.
