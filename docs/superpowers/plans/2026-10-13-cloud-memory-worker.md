@@ -29,7 +29,7 @@
 - **Plan 1 (this):** the Worker
 - **Plan 2:** local kit (setup.sh, hooks, CLAUDE.md rule)
 - **Plan 3:** e2e test runner + surface matrix
-- **Plan 4:** migration + production rollout + client onboarding + `bootstrap.py` for other developers + `npm run doctor` security self-check (spec §10 steps 7–8)
+- **Plan 4:** migration + production rollout + client onboarding + `bootstrap.py` for other developers + `npm run doctor` security self-check (spec §10 steps 7–8) + split docs into SELF-HOSTING.md and QUICKSTART.md (spec §10 Documentation)
 
 ## Global Constraints
 

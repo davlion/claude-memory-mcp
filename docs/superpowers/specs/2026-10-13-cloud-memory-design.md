@@ -646,8 +646,12 @@ Manual hosts follow a checklist, verified the same way.
 
 Shipped in the `claude-memory-cloud` repo, written for other developers as well as the current setup:
 
-- **`docs/QUICKSTART.md`:** step-by-step setup: memory repo, Cloudflare account, GitHub App, deploy, connect, per-machine setup, verification, adding a client org, and a development/test appendix.
+Two guides for two audiences, split in Plan 4 (today the Quickstart holds both):
+
+- **`docs/SELF-HOSTING.md`:** for someone who clones the repo and runs their own server: memory repo, Cloudflare account, GitHub App, deploy (later via `bootstrap.py`), the `npm run doctor` security check, production vs staging, upgrading, rotating secrets, and the development/test appendix.
+- **`docs/QUICKSTART.md`:** for connecting to a server that already exists, whether your own on another machine or one someone else runs: add the connector in claude.ai, run `setup.sh` on each machine, set the cloud env var, verify. Includes the client-org steps: create `<org>/claude-memory` and install the app.
 - **`docs/FAQ.md`:** what it is, security and privacy, day-to-day behavior, operations.
+- **`docs/THREAT-MODEL.md`:** risks, mitigations, and what to tell a client (from the security review).
 
 Drafts live in this repo at `docs/cloud-memory/` until `claude-memory-cloud` exists. Plan 1 Task 1 moves them there. Each later plan updates them when it changes user-visible behavior, and Plan 4 checks every step against the real deployment.
 
