@@ -198,7 +198,7 @@ All tools take `scope`: `general`, a client name (a key in `SCOPES`), or `projec
 
 | Tool | Parameters | Returns |
 |---|---|---|
-| `memory_scopes` | — | `[{scope, repo, reachable, writable, reason?}]`, where `reason` is `app_not_installed` or `no_user_access` |
+| `memory_scopes` | — | `[{scope, repo, reachable, writable, private, reason?}]`, where `reason` is `app_not_installed` or `no_user_access`. `writable` is false for a public repo |
 | `memory_index` | `scopes?: string[]` (default: all configured), `project?` | A `health` block (§7 F) followed by, per reachable scope (and the project, if given), the `MEMORY.md` content including the Conflicts section, then the `Since` map (§6 Freshness). An unknown project with no folder yet → empty index, not an error |
 | `memory_health` | `project?` | The `health` block only. Used on demand ("is memory working?") |
 | `memory_read` | `scope`, `names: string[]` (max 20) | Per name, `{name, content, version}` or `{name, error:"not_found"}`. `version` is the file's blob SHA |
@@ -211,12 +211,13 @@ All tools take `scope`: `general`, a client name (a key in `SCOPES`), or `projec
 Checks run in this order:
 
 1. **Validate:** name format, type enum, required fields. Failure → `status: invalid` with a message.
-2. **Secret scan** of all fields. A hit → `status: rejected_secret` with `pattern` (the rule name, never the matched text). Nothing is written.
-3. **No `version` (create):**
+2. **Visibility:** if the scope's repo is public → error `repo_public`, naming the repo and the fix. Nothing is written. The `private` flag comes from the `GET /repos/{repo}` call the store already makes to find the default branch, so this costs no extra request. `memory_delete` applies the same check; reads don't.
+3. **Secret scan** of all fields. A hit → `status: rejected_secret` with `pattern` (the rule name, never the matched text). Nothing is written.
+4. **No `version` (create):**
    - If `<name>.md` exists → `status: exists`, with its `version`. Claude should read it and update instead.
    - If similar memories exist and `force` is not set → `status: similar_found`, with `similar: [{name, description}]` (max 3). Nothing is written.
    - Otherwise write → `created`.
-4. **With `version` (update):**
+5. **With `version` (update):**
    - If the current blob SHA equals `version` → write → `updated`.
    - If it differs → write the new content to `memories/<name>.conflict-<ts>.md` (with the Conflicts index entry) → `status: conflict`, with `conflict_file`. The original is untouched.
    - If the file is missing → `not_found`.
@@ -374,7 +375,7 @@ For when Claude works but the memory connector doesn't: the Worker or GitHub is 
 
 - **Marker:** a non-empty outbox is the dirty flag. Entries carry their project, so the state is visible per project; no separate flag file.
 - **`SessionStart` hook** (user-level, Mac and VMs): counts entries. If there are any, it emits `additionalContext`: "N memories queued in outbox (M for this project). Once `memory_index` succeeds, flush them with `memory_save`/`memory_delete`, oldest first, and delete each entry only after a successful result." It outputs nothing when the outbox is empty. The same hook runs the local preflight checks (§7 F).
-- **Flush:** Claude replays each entry through the normal tools, so secret scanning, the similarity check, and conflict handling all apply. A stale `version` produces a conflict copy rather than overwriting. An entry that gets a non-retryable result (`rejected_secret`, `invalid`, `no_memory_repo_for_owner`) is kept and reported to the user rather than deleted.
+- **Flush:** Claude replays each entry through the normal tools, so secret scanning, the similarity check, and conflict handling all apply. A stale `version` produces a conflict copy rather than overwriting. An entry that gets a non-retryable result (`rejected_secret`, `repo_public`, `invalid`, `no_memory_repo_for_owner`) is kept and reported to the user rather than deleted.
 - **Why Claude flushes rather than a script:** the connector authenticates through claude.ai, and writing to GitHub directly would bypass the server's checks.
 - **Not covered:**
   - Cloud sessions: the outbox would be lost with the VM; the save is reported as not saved.
@@ -400,6 +401,7 @@ Each check returns `{check, status: ok|warn|fail, detail, action?}`. `action` is
 | `scope:<name>` | `app_not_installed` | General: "Install the GitHub App on `<repo>`: <install link> → Only select repositories → `claude-memory`." Client: "Ask an owner of `<org>` to install the app: <install link>." |
 | `scope:<name>` | `no_user_access` | "Your GitHub account `<login>` has no access to `<repo>`. Ask an owner of `<org>` to add you, or check you're signed in to the right GitHub account (reconnect the connector)." |
 | `scope:<name>` | repo missing | "Create the private repo `<repo>` (it can be empty); the server initializes it on first write." |
+| `scope:<name>` | `repo_public`: the repo's `private` flag is false (taken from the installation repository list the check already fetches) | "⚠ `<repo>` is **public**, so anyone can read these memories. Make it private: repo Settings → General → Danger Zone → Change visibility. Saves to this scope are blocked until then." |
 | `project` | `no_memory_repo_for_owner` | "No memory repo is configured for `<owner>`. Project memories for this repo can't be saved. To enable: create `<owner>/claude-memory`, install the app on it, and add a scope for `<owner>`." |
 | `project` | `unsupported_remote` | "This repo's origin isn't on GitHub; project memories aren't available here." |
 | `github_api` | 5xx / timeout | "GitHub is having problems (status page: githubstatus.com). Saves will be queued in the outbox; nothing to do." |
@@ -461,6 +463,7 @@ When a long session is compacted, the summary may drop the memory index and the 
 | Project owner has no memory repo | `no_memory_repo_for_owner` naming the owner; Claude tells the user (memory not saved) |
 | Non-GitHub remote | `unsupported_remote` |
 | Secret detected | `rejected_secret` + rule name |
+| Scope repo is public | `repo_public`: save and delete refused, reads allowed; the action says how to make it private. Not retryable on its own: an outbox entry stays queued until the repo is private |
 | Same-file concurrent edit | Conflict file (§6) |
 
 ## 9. Testing
@@ -573,6 +576,7 @@ Outbox entry format: a fixture-based round-trip test (memory frontmatter + `outb
 | S11f | Connector healthy, new session | H1 | `~/.claude/memory-cache/<key>.md` is rewritten with a newer `as_of` |
 | S13 | Two running sessions: H1 saves a memory; H3 (already running) then makes any memory tool call | H1 + H3 | H3's result includes the change notice with the new memory, and Claude mentions or uses it |
 | S14 | Long session: force compaction (`/compact`), then ask about a memory saved at the start | H1, H5 | Claude calls `memory_index` again after compaction (H1: prompted by the hook; H5: by the server instructions) and answers correctly |
+| S15 | Make `claude-memory-test` public, then start a session and save to it | H1 | health reports `repo_public` with the visibility action; the save is refused with "not saved: repo is public"; switching the repo back to private clears the warning and the save then succeeds |
 | S11d | Connector unavailable in a cloud session and in chat | H5, H6 | "not saved: <reason>" announced; nothing queued |
 | S12 | Preflight: break one thing at a time — revoke the GitHub token, uninstall the app from the test org, remove the user from the test org, point to a missing repo, block the Worker URL, turn auto-memory on, delete the routing rule, corrupt the scope map | H1 (all), H5 (server-side ones) | exactly one warning line per broken item, naming the right action; silent once fixed |
 | S12h | Preflight with everything healthy | all | no health output at all |
