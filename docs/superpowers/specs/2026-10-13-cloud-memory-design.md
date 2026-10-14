@@ -695,11 +695,12 @@ The final code review and the threat-model review (`docs/THREAT-MODEL.md` in `cl
 - Ref races are confirmed by re-reading the ref after a 422; if the ref didn't move, the error is `write_rejected`.
 - Non-JSON GitHub responses are classified by HTTP status, not thrown raw.
 - Conflict copies never overwrite each other (suffix on collision).
-- **Cloudflare free-plan limits** (the deployment stays on Workers Free):
+- **Cloudflare plan:** the owner moved to **Workers Paid** on 2026-10-14 (10,000 subrequests per invocation by default, far higher KV and CPU limits). The mitigations below are still built: they are good design, they keep a downgrade to Free possible, and self-hosters may run on Free. Handling must work on either plan.
+- **Cloudflare limits** (numbers are the Free plan's; Paid's are higher):
   - *100k requests/day* — Cloudflare answers itself (error 1027, HTTP 429) without running the Worker. The local preflight's `/health` check recognizes it: "memory server hit its daily free limit; resets 00:00 UTC; saves are queued". Clients see the connector as unavailable; local saves go to the outbox; elsewhere "not saved".
   - *50 external subrequests per invocation* — "Too many subrequests" is caught and mapped to `server_limit` (retryable) with an action; it affects only the scope being processed. Budget: `memory_index` reads only each scope's `MEMORY.md` blob via ref → commit → tree (≈4 per scope) plus one installation lookup per request (memoized); search reads all memory texts in one GraphQL query. A test counts GitHub calls and fails if `memory_index` for 3 scopes exceeds 20.
   - *1,000 KV writes/day* — cache writes are best-effort (a failure never breaks a read). A failed OAuth grant write during refresh is `temporarily_unavailable`, never revocation. Health warns when KV writes fail.
-  - *10 ms CPU per request* — measured on staging with `wrangler tail` (cpuTime) at 1, 50 and 200 memories per scope; the hot path (YAML parsing, index rebuild) is slimmed if any tool call exceeds ~5 ms median.
+  - *10 ms CPU per request on Free (30 s default on Paid)* — still measured on staging so self-hosters on Free know where they stand; with `wrangler tail` (cpuTime) at 1, 50 and 200 memories per scope; the hot path (YAML parsing, index rebuild) is slimmed if any tool call exceeds ~5 ms median.
   - `/register` and `/authorize` are rate-limited (Workers rate-limiting binding); `clientRegistrationCallback` rejects registrations whose redirect URIs fall outside the allowlist.
 
 **Tokens and grants** (§4)
