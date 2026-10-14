@@ -200,9 +200,10 @@ It's safe to run again.
 To keep a client's memories in the client's own GitHub org:
 
 1. **The client** (an org owner) creates a private, empty repo `<client-org>/claude-memory`. They add you to it if you don't already have access.
-2. **The client** installs your app: `https://github.com/apps/<slug>/installations/select_target` → their org → **Only select repositories** → `claude-memory`. No secrets change hands.
-3. **You** add the scope to `SCOPES` in `wrangler.jsonc`, e.g. `{"general": "<you>/claude-memory", "acme": "acme-org/claude-memory"}`, then run `npm run deploy:production`.
-4. **You** add the scope to the local scope map by rerunning `./setup.sh` on each machine.
+2. Make sure your app is public, so other accounts can install it: open `https://github.com/settings/apps/<slug>/advanced`. If the Danger zone offers **Make public**, click it (this doesn't list the app anywhere; it only allows other accounts to install it). If the client's org doesn't appear in the install page's account picker, this is the usual cause.
+3. **The client** installs your app: `https://github.com/apps/<slug>/installations/select_target` → their org → **Only select repositories** → `claude-memory`. No secrets change hands.
+4. **You** add the scope to `SCOPES` in `wrangler.jsonc`, e.g. `{"general": "<you>/claude-memory", "acme": "acme-org/claude-memory"}`, then run `npm run deploy:production`.
+5. **You** add the scope to the local scope map by rerunning `./setup.sh` on each machine.
 
 Memories about the client's codebases go to `<client-org>/claude-memory` under `projects/<repo>/`. If the client removes you from the org or uninstalls the app, access ends immediately.
 
@@ -214,7 +215,7 @@ Only needed if you're working on claude-memory-cloud itself.
 
 1. **Staging server:** also add the callback URL `https://claude-memory-staging.<sub>.workers.dev/callback` to the GitHub App (a GitHub App allows up to 10). Staging is the top-level config in `wrangler.jsonc`, deployed with `npm run deploy:staging`; its secrets are set without `--env`.
 2. **Test memory repo:** create a private, empty repo `<you>/claude-memory-test`, and add it to the app installation on your account.
-3. **Test client org:** create a free organization (github.com → **+** → **New organization** → **Free**), e.g. `<you>-test-client`. In it, create private repos `claude-memory` (empty) and `sample-app` (with a README). Install the app on that org, selecting only `claude-memory`.
+3. **Test client org:** create a free organization (github.com → **+** → **New organization** → **Free**), e.g. `<you>-test-client`. In it, create private repos `claude-memory` (empty) and `sample-app` (with a README). Install the app on that org, selecting only `claude-memory` (never `sample-app`: the app needs only the memory repo, and project memories for `sample-app` live in `claude-memory` under `projects/sample-app/`). If the org isn't offered on the install page, make the app public first (see "Adding a client organization", step 2).
 4. **Local secrets:** in the repo, create `.dev.vars` (it's gitignored):
 
    ```
