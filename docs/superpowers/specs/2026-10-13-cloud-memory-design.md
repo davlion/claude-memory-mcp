@@ -92,7 +92,7 @@ The pure units (`memory`, `secrets`, `remote`) contain no I/O. `store` is the on
 - **Secrets** (`wrangler secret put`): `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `COOKIE_ENCRYPTION_KEY`.
 - **Config** (a `wrangler.jsonc` var): `SCOPES`, a JSON map from scope name to repo, e.g. `{"general":"dav/claude-memory","acme":"acme-org/claude-memory"}`. Adding a client means installing the app on their repo, adding one line here, and redeploying.
 - **Project scope resolution:** a normalized remote `o/r` maps to the scope whose repo owner is `o`, with path `projects/<r>/`. Example: `acme-org/billing` → `acme-org/claude-memory` at `projects/billing/`. If no scope's repo is owned by `o` → error `no_memory_repo_for_owner`. Non-GitHub remotes → error `unsupported_remote`.
-- **Starting point:** Cloudflare's "remote MCP server with GitHub OAuth" demo. Check its current state before adopting it.
+- **Starting point:** built directly on `@cloudflare/workers-oauth-provider`'s consent and upstream sign-in helpers and the stateless `createMcpHandler` from `agents`. Cloudflare's GitHub-OAuth demo was stale (it predates those helpers and uses the deprecated `McpAgent`).
 
 ## 4. Authentication and access
 
