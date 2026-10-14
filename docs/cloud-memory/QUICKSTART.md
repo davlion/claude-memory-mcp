@@ -44,9 +44,9 @@ Then you connect it to Claude and run a setup script on each machine.
 
 ## Part 2 — Create a Cloudflare account
 
-1. Sign up at <https://dash.cloudflare.com/sign-up> and verify your email.
+1. Sign up at <https://dash.cloudflare.com/sign-up> and verify your email. Cloudflare offers sign-in with Apple, with GitHub, or with email and password. **Email and password** (kept in a password manager) is recommended: it keeps this account independent of your GitHub login, so one compromised account can't reach both your memory repos and the server that accesses them. If you use Apple, share your real email rather than a Hide My Email relay address.
 2. **Turn on two-factor authentication:** click the profile icon (top right) → **My Profile** → **Authentication** → set up two-factor authentication. Your server will hold access to your memory repo, so protect this account.
-3. In the left sidebar, open **Workers & Pages** (under Compute). Cloudflare asks you to choose a **workers.dev subdomain** the first time. Pick something short. If it doesn't ask, find it on the Workers & Pages overview under **Subdomain**.
+3. In the left sidebar, open **Workers & Pages** (under Compute). Cloudflare may assign a **workers.dev subdomain** automatically (often derived from your name or email) rather than asking. Find it on the Workers & Pages overview under **Subdomain**. Keep it, or change it now: it becomes part of your server's URL, which appears in your GitHub App and claude.ai settings. Changing it after Part 3 means updating the app's callback URL too.
 4. Write down the subdomain: `<sub>`. Your server's address will be `https://claude-memory.<sub>.workers.dev`.
 5. Log the command-line tool in. In a terminal:
 
@@ -54,7 +54,7 @@ Then you connect it to Claude and run a setup script on each machine.
    npx wrangler@4.150.0 login
    ```
 
-   A browser window opens; click **Allow**.
+   A browser window opens; click **Allow**. Wrangler asks for broad access to your Cloudflare account by default (Workers plus many other products). That's normal; the credentials stay in wrangler's config on your machine.
 6. Check it worked:
 
    ```bash
