@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-13
 **Status:** Approved in brainstorming; pending spec review
-**Implementation repo:** `claude-memory-cloud` (new). This repo (`claude-memory-mcp`) is unchanged and keeps syncing project memories from VMs.
+**Implementation repo:** `claude-memory-cloud` (new). This repo (`claude-memory-mcp`) stays in place. Its local cache is the source for the one-time migration of existing project memories (§10); after that it is legacy.
 
 ## 1. Goal
 
@@ -12,13 +12,19 @@ A standard memory context that follows the user across every Claude surface:
 - Claude Code cloud sessions (claude.ai/code)
 - claude.ai chat — web, Desktop, mobile
 
-Any session can read and add memories. **General** memories (about the user and how they work) and **client** memories (about a client org as a whole) live in the cloud. **Project** memories stay local in Claude Code auto-memory and are never mixed in.
+Any session can read and add memories. Three kinds of memory live in the cloud, each kept separate:
+
+- **General**: about the user and how they work.
+- **Client**: about a client org as a whole.
+- **Project**: about one codebase, identified by its git remote, so the same project on any machine or in a cloud session sees the same memories.
+
+Claude Code's built-in auto-memory is turned off (§7) so it doesn't compete with the cloud store.
 
 The same mechanism must work for a client whose code lives in private GitHub repos, with access governed by the permissions that client grants the user.
 
 ### Non-goals (v1)
 
-- Syncing project memories (the existing `claude-memory-mcp` covers this).
+- Project memories for directories without a git remote. Those sessions get general memories only.
 - Staleness/decay scoring, contradiction linting, scheduled consolidation. Consolidation is a candidate for a later scheduled Claude routine.
 - Embeddings / semantic search.
 - Non-Claude AI tools.
@@ -31,7 +37,12 @@ Verified during research on 2026-10-13 (see brainstorming transcript for sources
 - claude.ai custom connectors support OAuth through Dynamic Client Registration (DCR), CIMD (Claude's published client identity), or a user-supplied client. They support custom static headers only as a limited org beta.
 - GitHub's hosted MCP server does not support DCR. GitHub's own docs say it can't currently be added as a Claude connector, and a general GitHub connector would expose all of a client's code repos anyway. So we run our own server.
 - No native Anthropic feature bridges claude.ai memory and Claude Code memory. Chat and Cowork memory were merged on 2026-08-25; Claude Code is explicitly separate "for now". **Watch item:** if Anthropic syncs Claude Code memory, revisit this project. Client-owned repos and per-client scopes would remain differentiators.
-- Claude Code auto-memory in cloud sessions is local to the VM and is lost when the session ends.
+- Claude Code auto-memory is machine-local. Folders are named from each machine's path. In cloud sessions it is lost when the session ends.
+- Auto-memory can be turned off:
+  - with `autoMemoryEnabled: false` in user, project, local, or managed settings
+  - with the env var `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`
+  - When off, Claude neither creates nor loads auto-memory files.
+- There is no hook event for memory writes. Mirroring auto-memory would need a `PostToolUse` path filter that misses writes made through Bash. That makes it unreliable, so it was rejected in favor of turning auto-memory off.
 - In cloud sessions, hooks and settings from the repo run, but user-level `~/.claude` settings and hooks do not.
 - Prior art: nothing suitable to adopt. `hippocampus` (Cloudflare + GitHub App + private repo) is the closest architectural reference. Borrowed ideas are credited in the sections below.
 
@@ -47,8 +58,8 @@ Cloudflare Worker  "claude-memory"
   └─ MCP server (/mcp)        — memory tools → GitHub REST API
         │  user's GitHub token
         ▼
-GitHub:  dav/claude-memory            (scope: general)
-         <client-org>/claude-memory   (scope: <client>)
+GitHub:  dav/claude-memory            (scope: general;  projects/<repo>/ for dav/* projects)
+         <client-org>/claude-memory   (scope: <client>; projects/<repo>/ for <client-org>/* projects)
 ```
 
 ### Components
@@ -57,14 +68,15 @@ GitHub:  dav/claude-memory            (scope: general)
 |---|---|---|
 | `src/index.ts` | Wires OAuthProvider, auth handler, and MCP server | everything below |
 | `src/github-auth.ts` | GitHub App authorize/callback; token refresh | GitHub OAuth endpoints, KV |
-| `src/scopes.ts` | Maps scope name → repo; reports reachability per user | config, GitHub API |
+| `src/scopes.ts` | Resolves a scope (`general`, `<client>`, or `project` + remote) to `{repo, path}`; reports reachability per user | config, GitHub API |
+| `src/remote.ts` | Normalizes git remote URLs (`git@github.com:o/r.git`, `https://github.com/o/r`, `ssh://…`) → `o/r` | none (pure) |
 | `src/store.ts` | Reads tree/files at a commit; atomic multi-file commit with ref compare-and-swap | GitHub Git Data API |
 | `src/memory.ts` | Frontmatter parse/serialize; index rebuild; similarity check | none (pure) |
 | `src/secrets.ts` | Secret-pattern scanner | none (pure) |
 | `src/tools.ts` | MCP tool definitions; maps results and errors | memory, store, scopes, secrets |
 | `src/instructions.ts` | Server instructions text (includes routing rule) | none |
 
-The pure units (`memory`, `secrets`) contain no I/O. `store` is the only unit that talks to the Git Data API.
+The pure units (`memory`, `secrets`, `remote`) contain no I/O. `store` is the only unit that talks to the Git Data API.
 
 ### Infrastructure
 
@@ -74,6 +86,7 @@ The pure units (`memory`, `secrets`) contain no I/O. `store` is the only unit th
   - `claude-memory`, mapped to real repos
 - **Secrets** (`wrangler secret put`): `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `COOKIE_ENCRYPTION_KEY`.
 - **Config** (a `wrangler.jsonc` var): `SCOPES`, a JSON map from scope name to repo, e.g. `{"general":"dav/claude-memory","acme":"acme-org/claude-memory"}`. Adding a client means installing the app on their repo, adding one line here, and redeploying.
+- **Project scope resolution:** a normalized remote `o/r` maps to the scope whose repo owner is `o`, with path `projects/<r>/`. Example: `acme-org/billing` → `acme-org/claude-memory` at `projects/billing/`. If no scope's repo is owned by `o` → error `no_memory_repo_for_owner`. Non-GitHub remotes → error `unsupported_remote`.
 - **Starting point:** Cloudflare's "remote MCP server with GitHub OAuth" demo. Check its current state before adopting it.
 
 ## 4. Authentication and access
@@ -111,16 +124,23 @@ Client-hosted deployment is possible, since the code is small and self-contained
 
 ## 5. Repo layout and memory format
 
-One `claude-memory` repo per scope:
+One `claude-memory` repo per owner (the user, each client org). It holds that owner's general or client memories plus a folder per project:
 
 ```
 claude-memory/
 ├── README.md        # what this is; rules (no secrets; format)
 ├── MEMORY.md        # index — maintained by the server
-└── memories/
-    ├── <name>.md
-    └── <name>.conflict-<UTC timestamp>.md   # only when a conflict occurred
+├── memories/
+│   ├── <name>.md
+│   └── <name>.conflict-<UTC timestamp>.md   # only when a conflict occurred
+└── projects/
+    └── <repo>/
+        ├── MEMORY.md
+        └── memories/
+            └── <name>.md
 ```
+
+Every **memory set** (the root set, or one project's) has the same structure: a `MEMORY.md` plus a `memories/` folder. The rules below apply to each set independently. Names are unique per set.
 
 ### Memory file
 
@@ -160,17 +180,19 @@ The `## Conflicts` section is omitted when there are no conflicts. If someone ed
 
 ### Commits
 
-- Message: `<op>: <name>`. Trailers: `Memory-Source: <client>` (from the MCP `initialize` clientInfo name; record verbatim, and **verify during build** that surfaces report distinct names) and `Memory-Scope: <scope>`.
+- Message: `<op>: <name>`. Trailers: `Memory-Source: <client>` (from the MCP `initialize` clientInfo name; record verbatim, and **verify during build** that surfaces report distinct names) and `Memory-Scope: <scope>`, where a project scope is written `project:<owner>/<repo>`.
 - Mechanism: Git Data API. Create blobs, then a tree, then a commit, then update the ref with `force: false`. If the ref update fails because the branch moved, re-read and re-apply. That is always safe for a different-file change; a same-file change follows the conflict rule in §6.
 
 ## 6. Tools
 
-All tools take `scope`, the name of a key in `SCOPES`. Where noted, it defaults to `general`.
+All tools take `scope`: `general`, a client name (a key in `SCOPES`), or `project`. When `scope` is `project`, the parameter `project` is required. It takes a git remote URL or `owner/repo` and is resolved as described in §3. Where noted, `scope` defaults to `general`.
+
+`memory_index` additionally takes `project?`. When given, the project's index is included alongside the indexes for the requested scopes.
 
 | Tool | Parameters | Returns |
 |---|---|---|
 | `memory_scopes` | — | `[{scope, repo, reachable, writable, reason?}]`, where `reason` is `app_not_installed` or `no_user_access` |
-| `memory_index` | `scopes?: string[]` (default: all reachable) | Per scope, the `MEMORY.md` content, including the Conflicts section |
+| `memory_index` | `scopes?: string[]` (default: all reachable), `project?` | Per scope (and the project, if given), the `MEMORY.md` content, including the Conflicts section. An unknown project with no folder yet → empty index, not an error |
 | `memory_read` | `scope`, `names: string[]` (max 20) | Per name, `{name, content, version}` or `{name, error:"not_found"}`. `version` is the file's blob SHA |
 | `memory_search` | `query`, `scopes?` | `[{scope, name, description, snippet}]`, max 20. Case-insensitive substring/term match over name, description, and body |
 | `memory_save` | `scope` (default `general`), `name`, `description`, `type`, `body`, `version?`, `force?: boolean` | `{status, name, commit_url?, similar?, conflict_file?, pattern?}` |
@@ -216,9 +238,10 @@ Every rule needs a true-positive and a false-positive test.
 
 The Worker fetches the tree and the files for the scope's current commit and searches in memory. The result is cached in KV, keyed by commit SHA. GitHub code search is not used because its index lags behind recent writes.
 
-### Resource
+### Resources
 
-`memory://{scope}/index`, with the same content as `memory_index` for that scope.
+- `memory://{scope}/index`: the same content as `memory_index` for that scope.
+- `memory://project/{owner}/{repo}/index`: the same for a project.
 
 ### Conflict reconciliation
 
@@ -226,37 +249,72 @@ No dedicated tool. Claude reads both files, saves the merged content to `<name>.
 
 ## 7. Routing and triggering
 
-**Problem:** in Claude Code, "save a memory…" naturally goes to the built-in local auto-memory, whose instructions are in the system prompt. Connector tools are often deferred, and Claude has to decide whether a fact is general, client, or project. Four layers address this.
+**Problem:**
+- In Claude Code, "save a memory…" naturally goes to the built-in auto-memory, whose instructions are in the system prompt.
+- Connector tools are often deferred.
+- Claude has to decide whether a fact is general, client, or project.
+
+Turning auto-memory off removes the first problem. The four layers A–D below handle the rest.
+
+### Auto-memory off
+
+- **Mac and VMs:** `"autoMemoryEnabled": false` in `~/.claude/settings.json`, distributed to the VMs as part of setup.
+- **Cloud sessions:** `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` in the cloud environment's environment variables. User settings are not read in cloud sessions.
+- When off, the built-in "write memories to `~/.claude/projects/…/memory/`" instruction and the startup `MEMORY.md` load should both disappear. **Verify with `/context`** (§11).
+- Reversible: one setting.
+
+### Determining the project
+
+In Claude Code, the project is the `origin` remote of the session's working directory, from `git remote get-url origin`. That works locally and in cloud sessions, which clone the repo. With no git repo or no `origin` there is no project scope, and only general and client memories apply. claude.ai chat has no project; there, Claude uses a project scope only when the user names a repo.
 
 ### A. Routing rule in `~/.claude/CLAUDE.md`
 
 Covers local Code on the Mac and VMs. Distributed to the VMs as part of setup.
 
-> **Where memories go.** When saving a memory:
-> - About me or how we work in general → `memory_save` scope `general` (claude-memory connector).
-> - About the client org as a whole → `memory_save` scope `<client>`.
-> - About this codebase only → local auto-memory.
+> **Memory.** Memories live in the claude-memory connector. Auto-memory is off.
 >
-> If it's unclear, ask in one line ("general, <client>, or this project?"). After saving, state the scope it went to. At session start, call `memory_index`.
+> At session start, call `memory_index` with `project` = this repo's `git remote get-url origin` (omit it if there is none).
+>
+> When saving a memory:
+> - About me or how we work in general → scope `general`.
+> - About the client org as a whole → scope `<client>`.
+> - About this codebase → scope `project` with `project` = the origin remote.
+>
+> If it's unclear, ask in one line ("general, <client>, or this project?"). With no git remote, project-specific facts can't be saved; say so. After saving, state the scope it went to.
 
 ### B. `UserPromptSubmit` hook
 
 A user-level script in `~/.claude/hooks/`, installed on the Mac and the VMs.
 
-- It matches memory-intent phrases, case-insensitive: `save (a |this )?memory`, `remember (this|that)`, `don't (do|let) .* again`, `note for (the )?future`, `add (this )?to (your )?memory`.
-- On a match, it emits `additionalContext` containing a two-line reminder of the routing rule, plus the **inferred client scope**: the `origin` remote's owner, looked up in a local copy of the scope map (`~/.claude/memory-scopes.json`). If the owner is unknown, it injects no scope hint.
-- If the phrases don't match, it outputs nothing. It must run in under 100 ms and needs no network.
-- Whether B is needed is decided by test S2/S4/S5 results with A + C alone (§9). It is built regardless, because it is small, and it can be disabled.
+- It matches memory-intent phrases, case-insensitive:
+  - `save (a |this )?memory`
+  - `remember (this|that)`
+  - `don't (do|let) .* again`
+  - `note for (the )?future`
+  - `add (this )?to (your )?memory`
+- On a match, it emits `additionalContext` with:
+  - a two-line reminder of the routing rule
+  - **the origin remote**, if any, so Claude doesn't have to look it up
+  - **the inferred client scope**: the remote's owner looked up in a local copy of the scope map (`~/.claude/memory-scopes.json`). If the owner is unknown, there is no client hint.
+- If the phrases don't match, it outputs nothing. It must run in under 100 ms and needs no network; `git remote` is local.
+- Whether B is needed is decided by the S2/S4/S5 results with A + C alone (§9). It is built regardless, because it is small, and it can be disabled.
 
 ### C. Server instructions
 
 Sent by the Worker wherever the connector is enabled, so they reach cloud sessions and chat:
 
-> At the start of a conversation, call `memory_index`. Read individual memories when relevant. Save lasting facts about the user (scope `general`) or about a client org as a whole (client scope). Never save secrets or project-specific details here. Prefer updating an existing memory (pass its `version`) over creating a new one. After saving, tell the user the scope. In Claude Code cloud sessions, local auto-memory is lost when the session ends: for project-only facts, say so and offer to add the fact to the repo's `CLAUDE.md` instead. If `memory_index` lists conflicts, offer to reconcile them.
+> At the start of a conversation, call `memory_index`. In Claude Code, pass `project` = the working directory's `git remote get-url origin`, if there is one. Read individual memories when relevant.
+>
+> Save lasting facts to one of three scopes:
+> - the user (`general`)
+> - a client org as a whole (client scope)
+> - one codebase (`project`, with its origin remote)
+>
+> If the scope is unclear, ask in one line. Never save secrets. Prefer updating an existing memory (pass its `version`) over creating a new one. After saving, tell the user the scope. If `memory_index` lists conflicts, offer to reconcile them.
 
 ### D. Scope announcement
 
-Included in A and C: every save ends with "saved to **<scope>**", so misroutes are visible right away.
+Included in A and C: every save ends with "saved to **<scope>**" (for a project, "saved to **project billing**"), so misroutes are visible right away.
 
 ## 8. Error handling
 
@@ -267,6 +325,9 @@ Included in A and C: every save ends with "saved to **<scope>**", so misroutes a
 | GitHub 5xx / rate limit | Fail clearly with the retry-after if known. **No silent local fallback.** |
 | Ref update race | Re-read and re-apply. After 3 attempts → error |
 | Unknown scope | List valid scopes |
+| `scope: project` without `project` | `invalid`: "pass the git origin remote" |
+| Project owner has no memory repo | `no_memory_repo_for_owner` naming the owner; Claude tells the user (memory not saved) |
+| Non-GitHub remote | `unsupported_remote` |
 | Secret detected | `rejected_secret` + rule name |
 | Same-file concurrent edit | Conflict file (§6) |
 
@@ -282,7 +343,8 @@ vitest, run inside the actual Worker runtime via `@cloudflare/vitest-pool-worker
 - similarity threshold cases
 - `memory_save` decision table: create / exists / similar / force / update / stale version → conflict / not_found
 - delete paths
-- scope resolution
+- scope resolution, including project → `{repo, projects/<r>/}` and unknown owner
+- remote normalization: SSH, HTTPS, `ssh://`, with and without `.git`, trailing slashes, case of the owner
 - error mapping
 - Host and redirect allowlist checks
 
@@ -298,6 +360,8 @@ Uses the real throwaway repo `dav/claude-memory-test`. A scripted MCP client (Ty
 - `Memory-Source` and `Memory-Scope` trailers present
 - **Concurrency:** two simultaneous updates with the same `version` → exactly one `updated` and one `conflict`
 - Two simultaneous creates of different names → both land; the index contains both
+- Project scope: save, read, and index for `dav/<test-repo>` land under `projects/<test-repo>/` with their own `MEMORY.md`; the root index is unchanged
+- `memory_index` with an unknown project → empty project index, no error
 
 ### Level 3 — Hook tests
 
@@ -305,6 +369,7 @@ Shell-level tests of the `UserPromptSubmit` script:
 
 - trigger and non-trigger phrase tables
 - remote → scope mapping: client org, personal repo, no remote, non-git directory
+- the origin remote is included when present and omitted otherwise
 - no output on a non-match
 - runs under 100 ms
 
@@ -313,8 +378,9 @@ Shell-level tests of the `UserPromptSubmit` script:
 **Prerequisites:**
 
 - A test client org (free GitHub org, e.g. `dav-test-client`) with the app installed on `dav-test-client/claude-memory`. Never experiment on the real client first.
-- A test code repo in that org, used for S3.
+- A test code repo in that org (`dav-test-client/sample-app`), cloned on H1, H3, H4 and used in H5, for S3 and the project scenarios.
 - Staging connector added in claude.ai.
+- Auto-memory off on the hosts (settings on H1–H4, env var on H5).
 - VMs powered on.
 
 **Hosts:**
@@ -336,16 +402,17 @@ Shell-level tests of the `UserPromptSubmit` script:
 | S1 | Connector present; index read at session start unprompted | all | index content appears without being asked |
 | S2 | "Save a memory so we don't do X again" (general fact) | all | commit in `general` repo; scope announced |
 | S3 | Client-wide fact, session in a client-org repo | H1–H5 | commit in `dav-test-client` scope |
-| S4 | Project-only fact | H1–H4 | written to local auto-memory; no connector commit |
-| S4c | Project-only fact in cloud | H5 | Claude warns it won't persist and offers repo `CLAUDE.md` |
+| S0 | Auto-memory off takes effect | H1–H5 | `/context` shows no auto-memory instruction and no `MEMORY.md` load; no files written under `~/.claude/projects/*/memory/` during the run |
+| S4 | Project-only fact, session in `sample-app` | H1–H5 | commit under `dav-test-client/claude-memory/projects/sample-app/`; no local auto-memory file |
+| S4n | Project-only fact in a directory with no git remote | H1 | Claude says it can't be saved as a project memory; nothing committed |
 | S5 | Ambiguous fact | H1, H5, H6 | one-line scope question before saving |
-| S6 | Save on host A, new session on host B reads it | H1→H3, H3→H5, H5→H6, H6→H1 | memory available on B |
+| S6 | Save on host A, new session on host B reads it (general **and** project) | H1→H3, H3→H5, H5→H6 (general only), H4→H1 (project) | memory available on B; the project memory appears in B's session-start index |
 | S7 | S2 issued deep in a long session (after compaction) | H1, H5 | routes correctly |
 | S8 | Memory containing a secret | H1, H6 | refused; no commit |
 | S9 | Same memory edited concurrently from two hosts | H1 + H3 | conflict file appears; reconciled on next session start |
 | S10 | App uninstalled from test org | H1 | clear `app_not_installed` message |
 
-**Verification:** pass/fail is decided by checking the repos with `gh api`: expected commit, file, and trailers; for S4, the local auto-memory files; for S8, no commit. Scripted hosts run a driver script that issues the prompt and then checks. Manual hosts follow a checklist, verified the same way.
+**Verification:** pass/fail is decided by checking the repos with `gh api`: expected commit, file, and trailers. For S0 and S4, also confirm that no local auto-memory files appeared. For S4n and S8, confirm no commit. Scripted hosts run a driver script that issues the prompt and then checks. Manual hosts follow a checklist, verified the same way.
 
 **Fixed prompt set:** ~10 phrasings covering S2, S4, and S5, kept in the repo (`tests/e2e/prompts.json`) so results are comparable across hosts and runs. The first run uses layers A + C only, to decide whether layer B is needed. The second run adds B.
 
@@ -355,9 +422,15 @@ Shell-level tests of the `UserPromptSubmit` script:
 
 1. User creates the Cloudflare account (2FA) and the GitHub App (guided). User creates `dav/claude-memory`, `dav/claude-memory-test`, and the test org.
 2. Build the Worker. Levels 1 and 2 green on staging.
-3. Add the staging connector in claude.ai. Install layers A and B on the Mac and VMs. Run Level 3, then Level 4.
-4. Deploy production. Seed `general` by promoting existing general-purpose local memories, with the user choosing which ones.
-5. Onboard the client: an org owner installs the app on their `claude-memory` repo; add the scope; redeploy.
+3. Add the staging connector in claude.ai. On the Mac and VMs: turn auto-memory off and install layers A and B. In the cloud environment: set the auto-memory env var. Run Level 3, then Level 4.
+4. Deploy production.
+5. **One-time migration** of existing local memories:
+   - Source: the `claude-memory-mcp` cache (`~/.claude-memories/<vm>/<project-slug>/memory/`), which holds the Mac's and the VMs' memories.
+   - For each project folder, find its git remote by locating the repo on that host. Present the mapping table `slug → owner/repo` for the user to confirm or correct.
+   - The user picks which memories are general (→ `general`) and which are project memories (→ `project`). Merge duplicates of the same project across hosts with `memory_save`'s similar/exists handling.
+   - Done with a script that calls the production tools, so secret scanning and indexing apply.
+   - Local auto-memory folders are left in place (not deleted) as a backup.
+6. Onboard the client: an org owner installs the app on their `claude-memory` repo; add the scope; redeploy.
 
 ## 11. Open items to resolve during build
 
@@ -365,4 +438,6 @@ Shell-level tests of the `UserPromptSubmit` script:
 - Confirm that each surface reports a distinct MCP clientInfo name, for the `Memory-Source` trailer (§5).
 - Confirm cloud sessions can be launched from the CLI, for scripting H5 (§9).
 - Tune the similarity threshold (§6).
+- Confirm that turning auto-memory off removes the built-in memory instruction from the system prompt, not just the file loading (§7, test S0).
+- Confirm `CLAUDE_CODE_DISABLE_AUTO_MEMORY` set as a cloud environment variable takes effect in cloud sessions (§7, test S0 on H5).
 - Confirm the current state of Cloudflare's GitHub-OAuth MCP demo as a starting point (§3).
