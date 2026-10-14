@@ -117,13 +117,15 @@ The pure units (`memory`, `secrets`, `remote`) contain no I/O. `store` is the on
 
 ### Hardening (borrowed from memoria_mcp)
 
-- Pinned public base URL. Reject requests whose Host doesn't match, so the OAuth issuer can't be spoofed.
+- Pinned public base URL. Reject requests whose origin (scheme + host) doesn't match, so the OAuth issuer can't be spoofed. Plain `http://` requests get 421.
 - Redirect URI allowlist: `https://claude.ai/api/mcp/auth_callback`, `https://claude.com/api/mcp/auth_callback`, plus `localhost` callbacks for Claude Code CLI OAuth.
+- Error responses from the authorization endpoint redirect only to allowlisted redirect URIs. This closes an open redirect that DCR would otherwise allow.
+- Only GitHub's `bad_refresh_token` revokes a grant. Other refresh errors are treated as transient.
 - The Worker logs no memory content and no tokens.
 
 ### Data handling
 
-Memory text passes through the Worker in plaintext, because TLS ends at Cloudflare, and it reaches Anthropic whenever Claude reads it. The rule is **no secrets in memories**, enforced by the scanner in §6. Every write is a commit in the owner's repo, which gives a full audit trail.
+Memory text passes through the Worker in plaintext, because TLS ends at Cloudflare, and it reaches Anthropic whenever Claude reads it. The rule is **no secrets in memories**, enforced by the scanner in §6. Every write is a commit in the owner's repo, which gives a full audit trail. The KV blob cache (used by search) also holds memory text, keyed by blob SHA, with a 30-day expiry.
 
 Client-hosted deployment is possible, since the code is small and self-contained, but it is not needed for the current client: a small shop that trusts the user.
 
@@ -185,8 +187,9 @@ The `## Conflicts` section is omitted when there are no conflicts. If someone ed
 
 ### Commits
 
-- Message: `<op>: <name>`. Trailers: `Memory-Source: <client>` (from the MCP `initialize` clientInfo name; record verbatim, and **verify during build** that surfaces report distinct names) and `Memory-Scope: <scope>`, where a project scope is written `project:<owner>/<repo>`.
-- Mechanism: Git Data API. Create blobs, then a tree, then a commit, then update the ref with `force: false`. If the ref update fails because the branch moved, re-read and re-apply. That is always safe for a different-file change; a same-file change follows the conflict rule in §6.
+- Message: `<op>: <name>`. Trailers: `Memory-Source: <source>` and `Memory-Scope: <scope>`, where a project scope is written `project:<owner>/<repo>`.
+- `Memory-Source` comes from the optional `source` tool argument (Claude states where it runs, e.g. `claude-code on earsvm`, `claude.ai chat`); `unknown` if absent. Reason: connectors reach every surface through claude.ai, so the OAuth client is the same everywhere, and stateless MCP only carries clientInfo on `initialize`. The value is sanitized so it can't forge trailers: whitespace collapsed, max 100 chars, `unknown` if empty.
+- Mechanism: Git Data API. Create blobs, then a tree, then a commit, then update the ref with `force: false`. If the ref update fails because the branch moved, re-read and re-apply. That is always safe for a different-file change; a same-file change follows the conflict rule in §6. GitHub reports a racing ref update as HTTP 422 "Reference cannot be updated" or "not a fast forward"; both are treated as a ref race and retried.
 
 ## 6. Tools
 
@@ -198,13 +201,13 @@ All tools take `scope`: `general`, a client name (a key in `SCOPES`), or `projec
 
 | Tool | Parameters | Returns |
 |---|---|---|
-| `memory_scopes` | — | `[{scope, repo, reachable, writable, private, reason?}]`, where `reason` is `app_not_installed` or `no_user_access`. `writable` is false for a public repo |
+| `memory_scopes` | — | `[{scope, repo, reachable, writable, private, reason?}]`, where `reason` is `app_not_installed`, `not_reachable`, or `repo_public`. `writable` is false for a public repo |
 | `memory_index` | `scopes?: string[]` (default: all configured), `project?` | A `health` block (§7 F) followed by, per reachable scope (and the project, if given), the `MEMORY.md` content including the Conflicts section, then the `Since` map (§6 Freshness). An unknown project with no folder yet → empty index, not an error |
 | `memory_health` | `project?` | The `health` block only. Used on demand ("is memory working?") |
 | `memory_read` | `scope`, `names: string[]` (max 20) | Per name, `{name, content, version}` or `{name, error:"not_found"}`. `version` is the file's blob SHA |
-| `memory_search` | `query`, `scopes?` | `[{scope, name, description, snippet}]`, max 20. Case-insensitive substring/term match over name, description, and body |
-| `memory_save` | `scope` (default `general`), `name`, `description`, `type`, `body`, `version?`, `force?: boolean` | `{status, name, commit_url?, similar?, conflict_file?, pattern?}` |
-| `memory_delete` | `scope`, `name`, `version?` | `{status: deleted|conflict|not_found, commit_url?}` |
+| `memory_search` | `query`, `scopes?` | `[{scope, name, description, snippet}]`, max 20. Case-insensitive substring/term match over name, description, and body (not frontmatter keys) |
+| `memory_save` | `scope` (default `general`), `name`, `description`, `type`, `body`, `version?`, `force?: boolean`, `source?` | `{status, name, commit_url?, similar?, conflict_file?, pattern?}` |
+| `memory_delete` | `scope`, `name`, `version?`, `source?` | `{status: deleted|conflict|not_found, commit_url?}` |
 
 ### `memory_save` semantics
 
@@ -249,10 +252,11 @@ Pure function in `secrets.ts`, with rules for:
 - AWS access keys (`AKIA…`/`ASIA…`)
 - PEM private-key blocks
 - Slack tokens (`xox[abprs]-`)
-- Anthropic/OpenAI-style keys (`sk-ant-`, `sk-`)
+- Anthropic keys (`sk-ant-`)
+- OpenAI keys (`sk-`, `sk-proj-`, `sk-svcacct-`, `sk-admin-`), with `-` and `_` allowed in the body
 - Google API keys (`AIza`)
 - JWTs
-- generic `password|secret|token\s*[:=]\s*<long value>`
+- generic `key|token|secret|password = <long value>` assignments. They match quoted JSON/YAML keys too. Values that look like code references or URLs are not flagged: starting with `$`, `${`, `process.`, `os.`, `env.`, `http://`, `https://`, or containing `(`
 
 Every rule needs a true-positive and a false-positive test.
 
@@ -399,8 +403,7 @@ Each check returns `{check, status: ok|warn|fail, detail, action?}`. `action` is
 | `github_token` (warn) | expires within 15 min and no refresh token | "Memory sign-in expires soon; reconnect the claude-memory connector in claude.ai Settings → Connectors." |
 | `rate_limit` (warn) | < 10% remaining | "GitHub rate limit low (N left, resets HH:MM). Saves may be queued until then; no action needed." |
 | `scope:<name>` | `app_not_installed` | General: "Install the GitHub App on `<repo>`: <install link> → Only select repositories → `claude-memory`." Client: "Ask an owner of `<org>` to install the app: <install link>." |
-| `scope:<name>` | `no_user_access` | "Your GitHub account `<login>` has no access to `<repo>`. Ask an owner of `<org>` to add you, or check you're signed in to the right GitHub account (reconnect the connector)." |
-| `scope:<name>` | repo missing | "Create the private repo `<repo>` (it can be empty); the server initializes it on first write." |
+| `scope:<name>` | `not_reachable`: the repo isn't in the user's installation list. GitHub App user tokens return 404 for "repo missing", "app not on this repo", and "no user access" alike, so the three can't be told apart | Lists all three fixes, most likely first: "Install the app on `<repo>`; create the private repo `<repo>` if it doesn't exist (it can be empty; the server initializes it on first write); or, if you're not a member, ask an owner of `<org>` to add you, and check you're signed in to the right GitHub account (`<login>`)." |
 | `scope:<name>` | `repo_public`: the repo's `private` flag is false (taken from the installation repository list the check already fetches) | "⚠ `<repo>` is **public**, so anyone can read these memories. Make it private: repo Settings → General → Danger Zone → Change visibility. Saves to this scope are blocked until then." |
 | `project` | `no_memory_repo_for_owner` | "No memory repo is configured for `<owner>`. Project memories for this repo can't be saved. To enable: create `<owner>/claude-memory`, install the app on it, and add a scope for `<owner>`." |
 | `project` | `unsupported_remote` | "This repo's origin isn't on GitHub; project memories aren't available here." |
@@ -455,7 +458,7 @@ When a long session is compacted, the summary may drop the memory index and the 
 
 | Condition | Behavior |
 |---|---|
-| GitHub 404/403 on scope repo | Distinguish `app_not_installed` (installation lookup) from `no_user_access`; message names the fix |
+| GitHub 404/403 on scope repo | Distinguish `app_not_installed` (owner-level installation lookup) from `not_reachable` (repo missing, app not on the repo, or no user access: indistinguishable); message names the fixes |
 | Token refresh fails | `reauth_required`: "reconnect the claude-memory connector in claude.ai settings". Retryable: local Code queues the save in the outbox (§7 E) |
 | GitHub 5xx / rate limit | `unavailable`, with the retry-after if known. Retryable: local Code queues the save in the outbox; elsewhere it is reported as not saved. Never dropped silently. |
 | Connector unreachable or not loaded | No tool result at all. Local Code queues the save in the outbox; elsewhere it is reported as not saved. |
@@ -650,10 +653,11 @@ Drafts live in this repo at `docs/cloud-memory/` until `claude-memory-cloud` exi
 
 ## 11. Open items to resolve during build
 
-- Confirm that `workers-oauth-provider` encrypts grant props with the issued token (§4).
-- Confirm that each surface reports a distinct MCP clientInfo name, for the `Memory-Source` trailer (§5).
+- ~~Confirm that `workers-oauth-provider` encrypts grant props with the issued token (§4).~~ Resolved: verified in 1.2.3. Props are AES-GCM encrypted with key material from the token.
+- ~~Confirm that each surface reports a distinct MCP clientInfo name, for the `Memory-Source` trailer (§5).~~ Resolved: replaced by the `source` tool argument.
+- ~~Confirm the current state of Cloudflare's GitHub-OAuth MCP demo as a starting point (§3).~~ Resolved: the demo was stale. The Worker uses `workers-oauth-provider` 1.2.3's own consent and upstream helpers instead.
+- Resolved: `McpAgent` is deprecated. The Worker uses MCP SDK v2 (`@modelcontextprotocol/server`) and stateless `createMcpHandler`.
 - Confirm cloud sessions can be launched from the CLI, for scripting H5 (§9).
 - Tune the similarity threshold (§6).
 - Confirm that turning auto-memory off removes the built-in memory instruction from the system prompt, not just the file loading (§7, test S0).
 - Confirm `CLAUDE_CODE_DISABLE_AUTO_MEMORY` set as a cloud environment variable takes effect in cloud sessions (§7, test S0 on H5).
-- Confirm the current state of Cloudflare's GitHub-OAuth MCP demo as a starting point (§3).
