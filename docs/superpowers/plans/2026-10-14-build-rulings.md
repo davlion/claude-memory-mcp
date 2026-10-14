@@ -46,3 +46,25 @@ Decisions the build controller made on your behalf while executing the plans, in
 - carry into Task 10 (as a small code commit) — bump KV snapshot key snap:v1 → snap:v2 (pre-deploy cache entries lack the unreadable flag); repo_public wording when visibility unknown ("couldn't confirm private") — cheap correctness.
 - defer Steps 8–9 (seed script + CPU measurement) — informational only on Workers Paid; user didn't opt in — cost: Free-plan self-hosters lack a measured CPU number until run.
 - ONE fix wave covering Important #1 (+suspended_at, index-404 action, tokenBad narrowed) and Minors #2–#7, #9; defer #8 — skill: one fix dispatch; all pre-production items — cost: larger single diff.
+
+## Known follow-ups (deferred minor findings still worth doing)
+
+Triaged by the Plan 1 and Plan 1b final reviews; everything not listed was judged stay-deferred or closed.
+
+**Before production (Plan 4)**
+- memory_search drops the project target silently when its owner scope is unreachable for reasons other than an error (app not installed, not_reachable, suspended, public): add a problem line.
+- Pin hygiene when removing a friend whose login may be reused: also `wrangler kv key delete --remote "allowlist:github-id:<login>"` (documented in the Quickstart).
+- Production checklist: production KV ids; public production app with "Only select repositories"; set the SCOPES secret before first sign-in (pins the owner's ID on first connect); run `node scripts/check-scopes.mjs` before every `secret put SCOPES`.
+- Optional: cut per-call CPU overhead (~30 ms fixed: build the MCP server and schemas once per isolate, cache health results briefly) if Workers Free support is wanted.
+
+**Later / cleanup**
+- `Snapshot.indexSha` is dead (version is the SHA-1 of the rebuilt index); remove at the next cache-key bump.
+- `gather` calls reachability twice per memory_index (cached; a few extra subrequests).
+- Rate limiter `.limit()` throwing → 500 (fail open arguably better); limiter is approximate by Cloudflare design.
+- Pin get/put not atomic and the write fails open (low risk; commented).
+- A refused sign-in leaves the stranger's own `ghu_` token unrevoked.
+- Legacy grants without `githubId` skip the pin check until they age out (production starts with fresh grants).
+- `lastRateLimit` may hold the GraphQL quota after a snapshot.
+- Truncated-tree error reports `internal` rather than a size message.
+- Live tests leave stamped artifacts in the test repo; trailer test checks only the last 5 commits.
+- Spec §7 B/H still describes a local scope-map copy; reword in Plan 2 for the per-user map.
