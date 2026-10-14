@@ -419,6 +419,8 @@ Each check returns `{check, status: ok|warn|fail, detail, action?}`. `action` is
 
 The hook's network budget is one `GET` with a 1 s timeout. Its total runtime must stay under 1.5 s. The Worker's `/health` is unauthenticated and returns only `{ok, version, min_hook_version}`.
 
+| Local memory files private | `~/.claude/memory-outbox/` or `~/.claude/memory-cache/` not mode `700`, or a file in them not `600` | "Memory files on this machine are readable by other users. Run `chmod 700 ~/.claude/memory-outbox ~/.claude/memory-cache && chmod 600 ~/.claude/memory-outbox/* ~/.claude/memory-cache/*`." The hook also creates both directories with these modes. |
+
 #### Reporting rule
 
 - **Healthy → silent.**
@@ -626,6 +628,16 @@ Manual hosts follow a checklist, verified the same way.
    - **Ends** by printing the connector URL and the remaining manual steps: add the connector in claude.ai, then run `./setup.sh` on each machine.
    - **Tests:** unit tests for the manifest contents and the `wrangler.jsonc` edit; the redirect and code exchange are tested against a local fake GitHub. Plus one real run on a fresh GitHub account and Cloudflare account, following the updated Quickstart.
    - **Quickstart:** the main path becomes "Cloudflare signup → `wrangler login` → `./bootstrap.py` → add the connector → `./setup.sh`". The manual Parts 1, 3, 4, and 5 move to an appendix.
+
+8. **Security self-check: `npm run doctor`** in `claude-memory-cloud` (Plan 4, Python, standard library only). It runs automatically before `deploy:staging` and `deploy:production` (as an npm `pre` script, and a failure stops the deploy), and at the end of `bootstrap.py`. It prints one line per check, and every failure prints its fix:
+   - `.dev.vars`: mode `600`, ignored by git, no placeholder values left. Values are never printed.
+   - no editor or backup copies of it (`.dev.vars~`, `.dev.vars.bak`, `.dev.vars.swp`, …), which hold the same secrets
+   - no secrets in tracked files or in git history (the server's secret-scanner rules, run over `git log -p`)
+   - the three Worker secrets exist in the target environment (`wrangler secret list` names only)
+   - the GitHub App's permissions are exactly contents:write and metadata:read, and it subscribes to no webhook events (from the app's public API listing)
+   - every repo in `SCOPES` is private (via `GET /repos/{repo}` with the developer's `gh` token)
+
+   Checks that can't be automated (2FA on GitHub and Cloudflare; the client secret only in a password manager; no private key generated for the app) are listed at the end as a manual checklist. The Quickstart gets a short "Check your security setup" section built around this command.
 
 ### Documentation
 
