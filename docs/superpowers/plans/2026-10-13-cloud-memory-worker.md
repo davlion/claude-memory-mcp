@@ -1485,6 +1485,7 @@ git add src/store.ts test/store.test.ts test/fake-store.ts && git commit -m "fea
   - `deleteMemory(store: Store, t: Target, name: string, version?: string, source?: string, now?: Date): Promise<OpResult>`
   - `readMemories(store: Store, t: Target, names: string[]): Promise<({ name: string; content: string; version: string } | { name: string; error: "not_found" })[]>`
   - `getIndex(store: Store, t: Target): Promise<string>`. Returns the stored `MEMORY.md`, or one built from the files if it's missing (that path doesn't write).
+  - `getIndexVersioned(store: Store, t: Target): Promise<{ text: string; version: string }>`. Same text as `getIndex`. `version` is the stored `MEMORY.md` blob SHA, or `"none"` when there is no stored index. Every save and delete rewrites the index in the same commit, so the version changes exactly when the scope's memories change. Used for the `since` map (Task 10).
   - `searchMemories(store: Store, targets: Target[], query: string): Promise<{ scope: string; name: string; description: string; snippet: string }[]>`. Max 20 results.
   - `MAX_ATTEMPTS = 3`
 
@@ -1493,7 +1494,7 @@ git add src/store.ts test/store.test.ts test/fake-store.ts && git commit -m "fea
 ```ts
 import { beforeEach, describe, expect, it } from "vitest";
 import { serializeMemory } from "../src/memory";
-import { deleteMemory, getIndex, readMemories, saveMemory, searchMemories } from "../src/operations";
+import { deleteMemory, getIndex, getIndexVersioned, readMemories, saveMemory, searchMemories } from "../src/operations";
 import type { Target } from "../src/scopes";
 import { FakeStore } from "./fake-store";
 
@@ -1655,6 +1656,16 @@ describe("read / index / search", () => {
     expect(await getIndex(store, { ...P, prefix: "projects/none/", displayLabel: "project none" }))
       .toBe("# Memory index — project none\n\n(no memories yet)\n");
   });
+  it("getIndexVersioned: blob SHA of MEMORY.md, \"none\" when absent, changes on save", async () => {
+    const before = await getIndexVersioned(store, T);
+    expect(before.version).toMatch(/^[0-9a-f]{40}$/);
+    expect(before.text).toBe(await getIndex(store, T));
+    expect((await getIndexVersioned(store, { ...P, prefix: "projects/none/", displayLabel: "project none" })).version).toBe("none");
+    await saveMemory(store, T, { name: "zz-new", ...base, description: "something unrelated entirely" }, NOW);
+    const after = await getIndexVersioned(store, T);
+    expect(after.version).not.toBe(before.version);
+    expect(after.text).toContain("[zz-new]");
+  });
   it("search matches all terms across body, case-insensitive, with snippet", async () => {
     const r = await searchMemories(store, [T, P], "GENERATED hand");
     expect(r).toEqual([{ scope: "project app", name: "b", description: "project thing", snippet: expect.stringContaining("generated/") }]);
@@ -1788,12 +1799,16 @@ export async function readMemories(store: Store, t: Target, names: string[]) {
   });
 }
 
-export async function getIndex(store: Store, t: Target): Promise<string> {
+export async function getIndexVersioned(store: Store, t: Target): Promise<{ text: string; version: string }> {
   const snap = await store.snapshot(t.repo, t.prefix);
   const stored = snap.files.get("MEMORY.md");
-  if (stored) return stored.content;
+  if (stored) return { text: stored.content, version: stored.sha };
   const { list, conflicts } = entries(snap);
-  return buildIndex(t.displayLabel, list, conflicts);
+  return { text: buildIndex(t.displayLabel, list, conflicts), version: "none" };
+}
+
+export async function getIndex(store: Store, t: Target): Promise<string> {
+  return (await getIndexVersioned(store, t)).text;
 }
 
 export async function searchMemories(store: Store, targets: Target[], query: string) {
@@ -2121,7 +2136,8 @@ git add src/health.ts test/health.test.ts && git commit -m "feat: health checks 
 - Produces:
   - `INSTRUCTIONS: string`
   - `interface ToolDeps { store: Store; gh: GitHub; cfg: ScopeConfig; props: Props; appSlug: string; now?: () => Date }`
-  - `callTool(deps: ToolDeps, name: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }>`. This is the transport-independent dispatcher, and it's what the tests exercise.
+  - `callTool(deps: ToolDeps, name: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean; notes?: string }>`. This is the transport-independent dispatcher, and it's what the tests exercise. `notes` carries the "changed since your index" block; `createServer` sends it as a second text content item so `text` stays plain JSON.
+  - **`since` map** (spec §6 "Freshness"): `memory_index` ends with a `## Since` section holding a JSON object `{ [scopeLabel]: indexVersion }` for every index it returned (keys like `general`, `acme`, `project:acme-org/billing`). `memory_read`, `memory_search`, `memory_save`, and `memory_delete` accept `since?: Record<string, string>`. When given, the dispatcher re-checks each key after the operation; for any whose version differs it returns that scope's current index plus an updated map in `notes`. Unknown or unresolvable keys are ignored. A failure in this check never fails the tool call.
   - `createServer(deps: ToolDeps): McpServer`. It registers every tool through `callTool`, plus the resource templates.
   - Tool names: `memory_scopes`, `memory_index`, `memory_health`, `memory_read`, `memory_search`, `memory_save`, `memory_delete`.
 
@@ -2131,6 +2147,8 @@ git add src/health.ts test/health.test.ts && git commit -m "feat: health checks 
 import { beforeEach, describe, expect, it } from "vitest";
 import { GitHub } from "../src/github";
 import { callTool, createServer, type ToolDeps } from "../src/tools";
+import { saveMemory } from "../src/operations";
+import { resolveTarget } from "../src/scopes";
 import { INSTRUCTIONS } from "../src/instructions";
 import { FakeStore } from "./fake-store";
 import { json, mockFetch } from "./setup";
@@ -2232,11 +2250,50 @@ describe("callTool", () => {
   });
 });
 
+const sinceOf = (indexText: string) =>
+  JSON.parse(/## Since\n[^\n]*\n```json\n([\s\S]*?)\n```/.exec(indexText)![1]) as Record<string, string>;
+
+describe("since map", () => {
+  it("memory_index ends with a since map covering every returned index", async () => {
+    healthyGitHub();
+    const since = sinceOf((await callTool(deps, "memory_index", { project: "acme-org/billing" })).text);
+    expect(Object.keys(since).sort()).toEqual(["acme", "general", "project:acme-org/billing"]);
+    expect(since["project:acme-org/billing"]).toBe("none");
+  });
+
+  it("reports scopes changed elsewhere, with a new map; silent when nothing changed", async () => {
+    healthyGitHub();
+    const since = sinceOf((await callTool(deps, "memory_index", {})).text);
+    const quiet = await callTool(deps, "memory_read", { scope: "general", names: ["x"], since });
+    expect(quiet.notes).toBeUndefined();
+
+    // another surface saves to general
+    await saveMemory(store, resolveTarget(cfg, "general"), { name: "from-elsewhere", description: "deploys freeze on fridays", type: "project", body: "b\n", source: "other" });
+
+    const r = await callTool(deps, "memory_read", { scope: "general", names: ["x"], since });
+    expect(JSON.parse(r.text)).toEqual([{ name: "x", error: "not_found" }]); // text stays plain JSON
+    expect(r.notes).toContain("Memory changed since your index");
+    expect(r.notes).toContain("[from-elsewhere]");
+    expect(r.notes).not.toContain("Memory index — acme");
+    const next = sinceOf(r.notes!);
+    expect(next.general).not.toBe(since.general);
+    expect(next.acme).toBe(since.acme);
+    expect((await callTool(deps, "memory_read", { scope: "general", names: ["x"], since: next })).notes).toBeUndefined();
+  });
+
+  it("ignores unknown keys and survives a failing check", async () => {
+    const r = await callTool(deps, "memory_read", { scope: "general", names: ["x"], since: { nope: "abc", "project:someone/x": "none" } });
+    expect(r.isError).toBe(false);
+    expect(r.notes).toBeUndefined();
+  });
+});
+
 describe("createServer", () => {
   it("constructs with instructions", () => {
     expect(() => createServer(deps)).not.toThrow();
     expect(INSTRUCTIONS).toContain("memory_index");
     expect(INSTRUCTIONS).toContain("source");
+    expect(INSTRUCTIONS).toContain("since");
   });
 });
 ```
@@ -2259,6 +2316,8 @@ Always pass source: a short description of where you are running, e.g. "claude-c
 
 After every save attempt, end with exactly one of: "saved to <scope>", "queued in outbox for <scope>", or "not saved: <reason>". If a save fails with a retryable error (unavailable, reauth_required) tell the user plainly; in local Claude Code follow the outbox rule in the user's CLAUDE.md; elsewhere there is no outbox, so say the memory was not saved.
 
+memory_index ends with a "Since" map. Pass it as since on every later memory_read, memory_search, memory_save, and memory_delete call. If a result says "Memory changed since your index", treat the index it includes as replacing your copy for that scope, and use its new Since map from then on.
+
 If memory_index lists Conflicts, offer to reconcile them: read both files, save the merged content to the original with its version, then memory_delete the conflict copy (its name is the filename without .md).`;
 ```
 
@@ -2272,7 +2331,7 @@ import { OpError } from "./errors";
 import { GitHub, toOpError } from "./github";
 import { formatHealth, runHealth, scopeReachability } from "./health";
 import { INSTRUCTIONS } from "./instructions";
-import { deleteMemory, getIndex, readMemories, saveMemory, searchMemories } from "./operations";
+import { deleteMemory, getIndex, getIndexVersioned, readMemories, saveMemory, searchMemories } from "./operations";
 import { resolveTarget, type ScopeConfig, type Target } from "./scopes";
 import type { Store } from "./store";
 
@@ -2287,7 +2346,40 @@ async function reachableTargets(d: ToolDeps, scopes?: string[]): Promise<{ targe
   return { targets: reach.filter((r) => r.reachable && wanted.includes(r.scope)).map((r) => resolveTarget(d.cfg, r.scope)) };
 }
 
-export async function callTool(d: ToolDeps, name: string, a: Record<string, unknown>): Promise<{ text: string; isError: boolean }> {
+const sinceBlock = (m: Record<string, string>) =>
+  `## Since\nPass this as since on later memory tool calls:\n\`\`\`json\n${JSON.stringify(m)}\n\`\`\``;
+
+function targetForKey(cfg: ScopeConfig, key: string): Target {
+  return key.startsWith("project:") ? resolveTarget(cfg, "project", key.slice("project:".length)) : resolveTarget(cfg, key);
+}
+
+// Best effort: returns undefined when nothing changed or the check itself fails.
+async function changesSince(d: ToolDeps, since: Record<string, string>): Promise<string | undefined> {
+  try {
+    const next = { ...since };
+    const parts: string[] = [];
+    for (const [key, version] of Object.entries(since)) {
+      let t: Target;
+      try { t = targetForKey(d.cfg, key); } catch { delete next[key]; continue; }
+      const cur = await getIndexVersioned(d.store, t);
+      if (cur.version !== version) { parts.push(cur.text); next[key] = cur.version; }
+    }
+    if (!parts.length) return undefined;
+    return [`## Memory changed since your index\nThese indexes replace your copies:`, ...parts, sinceBlock(next)].join("\n\n");
+  } catch {
+    return undefined;
+  }
+}
+
+export async function callTool(d: ToolDeps, name: string, a: Record<string, unknown>): Promise<{ text: string; isError: boolean; notes?: string }> {
+  const r = await dispatch(d, name, a);
+  const since = a.since as Record<string, string> | undefined;
+  if (name === "memory_index" || !since || typeof since !== "object") return r;
+  const notes = await changesSince(d, since);
+  return notes ? { ...r, notes } : r;
+}
+
+async function dispatch(d: ToolDeps, name: string, a: Record<string, unknown>): Promise<{ text: string; isError: boolean }> {
   const now = d.now?.() ?? new Date();
   const scope = (a.scope as string | undefined) ?? "general";
   const project = a.project as string | undefined;
@@ -2300,13 +2392,19 @@ export async function callTool(d: ToolDeps, name: string, a: Record<string, unkn
       case "memory_index": {
         const health = await runHealth({ gh: d.gh, cfg: d.cfg, props: d.props, appSlug: d.appSlug, project });
         const parts = [`## Health\n${formatHealth(health)}`];
+        const since: Record<string, string> = {};
         const tokenBad = health.some((c) => c.check === "github_token" && c.status === "fail") || health.some((c) => c.check === "github_api");
         if (!tokenBad) {
           const { targets } = await reachableTargets(d, a.scopes as string[] | undefined);
-          for (const t of targets) parts.push(await getIndex(d.store, t));
           if (project && health.some((c) => c.check === "project" && c.status === "ok")) {
-            parts.push(await getIndex(d.store, resolveTarget(d.cfg, "project", project)));
+            targets.push(resolveTarget(d.cfg, "project", project));
           }
+          for (const t of targets) {
+            const idx = await getIndexVersioned(d.store, t);
+            parts.push(idx.text);
+            since[t.scopeLabel] = idx.version;
+          }
+          parts.push(sinceBlock(since));
         }
         return ok(parts.join("\n\n"));
       }
@@ -2339,13 +2437,16 @@ export async function callTool(d: ToolDeps, name: string, a: Record<string, unkn
 const scopeArg = z.string().optional().describe('"general", a client scope name, or "project". Default "general".');
 const projectArg = z.string().optional().describe("Git origin remote URL or owner/repo. Required when scope is \"project\".");
 const sourceArg = z.string().optional().describe('Where you are running, e.g. "claude-code on earsvm", "claude.ai chat".');
+const sinceArg = z.record(z.string(), z.string()).optional().describe("The Since map from memory_index (or from the latest change notice).");
 
 export function createServer(d: ToolDeps): McpServer {
   const server = new McpServer({ name: "claude-memory", version: "0.1.0" }, { instructions: INSTRUCTIONS });
   const reg = (name: string, description: string, shape: Record<string, z.ZodType>) =>
     server.registerTool(name, { description, inputSchema: z.object(shape) }, async (args: Record<string, unknown>) => {
       const r = await callTool(d, name, args);
-      return { content: [{ type: "text" as const, text: r.text }], isError: r.isError };
+      const content = [{ type: "text" as const, text: r.text }];
+      if (r.notes) content.push({ type: "text" as const, text: r.notes });
+      return { content, isError: r.isError };
     });
 
   reg("memory_scopes", "List memory scopes and whether you can reach and write them.", {});
@@ -2353,15 +2454,15 @@ export function createServer(d: ToolDeps): McpServer {
   reg("memory_index", "Call at conversation start. Health, then the MEMORY.md index of each reachable scope and the project.", {
     scopes: z.array(z.string()).optional(), project: projectArg });
   reg("memory_read", "Read memories in full. Returns each memory's version for safe updates.", {
-    scope: scopeArg, project: projectArg, names: z.array(z.string()).min(1).max(20) });
+    scope: scopeArg, project: projectArg, names: z.array(z.string()).min(1).max(20), since: sinceArg });
   reg("memory_search", "Search memories (all terms must match) across reachable scopes and the project.", {
-    query: z.string().min(1), scopes: z.array(z.string()).optional(), project: projectArg });
+    query: z.string().min(1), scopes: z.array(z.string()).optional(), project: projectArg, since: sinceArg });
   reg("memory_save", "Create a memory (no version) or update one (pass version from memory_read).", {
     scope: scopeArg, project: projectArg, name: z.string(), description: z.string(),
     type: z.enum(["user", "feedback", "project", "reference"]), body: z.string(),
-    version: z.string().optional(), force: z.boolean().optional(), source: sourceArg });
+    version: z.string().optional(), force: z.boolean().optional(), source: sourceArg, since: sinceArg });
   reg("memory_delete", "Delete a memory or a conflict copy (name = filename without .md). Pass version to avoid deleting a changed memory.", {
-    scope: scopeArg, project: projectArg, name: z.string(), version: z.string().optional(), source: sourceArg });
+    scope: scopeArg, project: projectArg, name: z.string(), version: z.string().optional(), source: sourceArg, since: sinceArg });
 
   server.registerResource("scope-index", new ResourceTemplate("memory://{scope}/index", { list: undefined }),
     { description: "MEMORY.md index for a scope", mimeType: "text/markdown" },

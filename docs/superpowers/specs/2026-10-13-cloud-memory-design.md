@@ -194,10 +194,12 @@ All tools take `scope`: `general`, a client name (a key in `SCOPES`), or `projec
 
 `memory_index` additionally takes `project?`. When given, the project's index is included alongside the indexes for the requested scopes.
 
+`memory_read`, `memory_search`, `memory_save`, and `memory_delete` also take `since?` (§6 Freshness); it is omitted from the table below.
+
 | Tool | Parameters | Returns |
 |---|---|---|
 | `memory_scopes` | — | `[{scope, repo, reachable, writable, reason?}]`, where `reason` is `app_not_installed` or `no_user_access` |
-| `memory_index` | `scopes?: string[]` (default: all configured), `project?` | A `health` block (§7 F) followed by, per reachable scope (and the project, if given), the `MEMORY.md` content including the Conflicts section. An unknown project with no folder yet → empty index, not an error |
+| `memory_index` | `scopes?: string[]` (default: all configured), `project?` | A `health` block (§7 F) followed by, per reachable scope (and the project, if given), the `MEMORY.md` content including the Conflicts section, then the `Since` map (§6 Freshness). An unknown project with no folder yet → empty index, not an error |
 | `memory_health` | `project?` | The `health` block only. Used on demand ("is memory working?") |
 | `memory_read` | `scope`, `names: string[]` (max 20) | Per name, `{name, content, version}` or `{name, error:"not_found"}`. `version` is the file's blob SHA |
 | `memory_search` | `query`, `scopes?` | `[{scope, name, description, snippet}]`, max 20. Case-insensitive substring/term match over name, description, and body |
@@ -220,6 +222,19 @@ Checks run in this order:
    - If the file is missing → `not_found`.
 
 `memory_delete` with a stale `version` → `conflict`, and nothing is deleted. Without `version` → unconditional delete. Claude is instructed to pass a version.
+
+### Freshness: changes made by other surfaces
+
+Nothing is pushed to running sessions. A session sees another surface's changes in two ways:
+
+- **New sessions** call `memory_index`, which returns the latest state.
+- **Running sessions** learn of changes on their next memory tool call:
+  - `memory_index` ends with a `Since` map, `{scopeLabel: indexVersion}`, with one entry per index it returned (e.g. `general`, `acme`, `project:acme-org/billing`). `indexVersion` is the blob SHA of that scope's `MEMORY.md`, or `none` if there isn't one. Each save and delete rewrites the index in the same commit, so the version changes exactly when that scope's memories change.
+  - `memory_read`, `memory_search`, `memory_save`, and `memory_delete` take `since?`. After the operation, the Worker re-checks each scope in the map. For any that changed, it adds a second content item, "Memory changed since your index", containing that scope's current index and a new `Since` map. The tool's own result stays unchanged.
+  - Unknown keys are ignored. If the check itself fails, the result still returns, without the notice.
+  - A session's own save also changes the version, so the notice follows it. That's correct, because the session's copy of the index is stale too.
+
+This stays stateless: the Worker stores nothing per session. Claude carries the map. Duplicates and concurrent edits are already handled by the save path (similarity check, conflict copies), whether or not the notice was seen.
 
 ### Similarity check (borrowed from memoria_mcp)
 
@@ -321,6 +336,8 @@ Sent by the Worker wherever the connector is enabled, so they reach cloud sessio
 > - one codebase (`project`, with its origin remote)
 >
 > If the scope is unclear, ask in one line. Never save secrets. Prefer updating an existing memory (pass its `version`) over creating a new one. After saving, tell the user the scope. If `memory_index` lists conflicts, offer to reconcile them.
+>
+> `memory_index` ends with a `Since` map. Pass it as `since` on later memory tool calls. If a result says "Memory changed since your index", replace your copy of that scope's index with the one given and use the new map.
 >
 > If a save fails with a retryable error (`unavailable`, `reauth_required`), tell the user plainly. In local Claude Code, follow the outbox rule in the user's CLAUDE.md. Elsewhere, there is no outbox: tell the user the memory was not saved.
 
@@ -539,6 +556,7 @@ Outbox entry format: a fixture-based round-trip test (memory frontmatter + `outb
 | S11c | Queued update whose `version` went stale (memory edited from another host before the flush) | H1 + H3 | flush produces a conflict copy, not an overwrite; outbox entry removed |
 | S11e | S11 continued: with the connector still unavailable, start a new session in a repo that has a snapshot | H1, H3 | the snapshot's memories appear, labeled stale with their date; Claude says the connector is unavailable |
 | S11f | Connector healthy, new session | H1 | `~/.claude/memory-cache/<key>.md` is rewritten with a newer `as_of` |
+| S13 | Two running sessions: H1 saves a memory; H3 (already running) then makes any memory tool call | H1 + H3 | H3's result includes the change notice with the new memory, and Claude mentions or uses it |
 | S11d | Connector unavailable in a cloud session and in chat | H5, H6 | "not saved: <reason>" announced; nothing queued |
 | S12 | Preflight: break one thing at a time — revoke the GitHub token, uninstall the app from the test org, remove the user from the test org, point to a missing repo, block the Worker URL, turn auto-memory on, delete the routing rule, corrupt the scope map | H1 (all), H5 (server-side ones) | exactly one warning line per broken item, naming the right action; silent once fixed |
 | S12h | Preflight with everything healthy | all | no health output at all |
