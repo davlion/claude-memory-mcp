@@ -71,14 +71,14 @@ Then you connect it to Claude and run a setup script on each machine.
 
 The GitHub App is how the server gets access to your memory repo, **and only that repo**. It acts as you, so it can never do more than you can, and commits show up under your name.
 
-1. Go to github.com → your profile picture → **Settings** → **Developer settings** (bottom of the sidebar) → **GitHub Apps** → **New GitHub App**.
+1. Go to <https://github.com/settings/apps/new> (or: profile picture → **Settings** → **Developer settings** → **GitHub Apps** → **New GitHub App**). Make sure it's **GitHub Apps**, not **OAuth Apps**: the right form has a **Permissions** section further down.
 2. Fill in:
 
    | Field | Value |
    |---|---|
    | GitHub App name | `<you>-claude-memory` (must be unique on GitHub) |
    | Homepage URL | `https://claude-memory.<sub>.workers.dev` |
-   | Callback URL | `https://claude-memory.<sub>.workers.dev/callback` |
+   | Redirect URI (called "Callback URL" on older versions of the page) | `https://claude-memory.<sub>.workers.dev/callback` |
    | Expire user authorization tokens | ✅ checked (the default) |
    | Request user authorization (OAuth) during installation | ☐ unchecked |
    | Enable Device Flow | ☐ unchecked |
