@@ -260,7 +260,7 @@ No dedicated tool. Claude reads both files, saves the merged content to `<name>.
 - Connector tools are often deferred.
 - Claude has to decide whether a fact is general, client, or project.
 
-Turning auto-memory off removes the first problem. Layers A–D below handle the rest, and E covers saves made while the connector is unavailable.
+Turning auto-memory off removes the first problem. Layers A–D below handle the rest. E covers saves made while the connector is unavailable, and G covers reads.
 
 ### Auto-memory off
 
@@ -287,6 +287,8 @@ Covers local Code on the Mac and VMs. Distributed to the VMs as part of setup.
 > - About this codebase → scope `project` with `project` = the origin remote.
 >
 > If it's unclear, ask in one line ("general, <client>, or this project?"). With no git remote, project-specific facts can't be saved; say so. After saving, state the scope it went to.
+>
+> After each successful `memory_index`, write its result to `~/.claude/memory-cache/<owner__repo or _none>.md` (§7 G). If `memory_index` fails, use the session-start snapshot, say it is stale and give its date, and don't save, update, or delete from it.
 >
 > If `memory_save` fails because the connector is unavailable (unreachable, auth expired, upstream error, or the tools aren't loaded), write the memory to the outbox (`~/.claude/memory-outbox/`, format in §7 E) and say "queued in outbox for <scope>". Never drop it silently. If the session-start hook reports queued memories and the connector works, flush them.
 
@@ -356,8 +358,21 @@ For when Claude works but the memory connector doesn't: the Worker or GitHub is 
 - **Not covered:**
   - Cloud sessions: the outbox would be lost with the VM; the save is reported as not saved.
   - claude.ai chat: there is no local disk.
-  - Reads while the connector is unavailable fail visibly. There is no local index cache in v1.
+  - Reads while the connector is unavailable: only the stale snapshot (§7 G) is available. `memory_read` and `memory_search` fail visibly.
 - **Precedent:** the `claude-memory-mcp` pending-shares queue, which retries unreachable VMs on the next `sync_now`.
+
+### G. Last-known-good snapshot (local Claude Code only)
+
+Gives a session some memories when the connector is unavailable, or when Claude skips the session-start `memory_index` call. It is read-only and always labeled stale.
+
+- **Location:** `~/.claude/memory-cache/<key>.md`, mode `0600`. `<key>` is the origin remote as `owner__repo`, or `_none` outside a git repo.
+- **Content:** the `memory_index` result (the general, client, and project indexes, which are one line per memory), with an `as_of` timestamp and the scope commit SHAs. It holds the index only, not memory bodies.
+- **Writer:** Claude. After each successful `memory_index`, it overwrites the snapshot for the current key. Layer A includes this rule. Nothing else writes to the cache. The hook can't, because only the connector holds GitHub credentials.
+- **Reader:** the `SessionStart` hook. When a snapshot exists for the current key, the hook always injects it as `additionalContext`, headed: "Memory snapshot from <as_of> (stale; read-only). A successful `memory_index` supersedes it." It is capped at 8 KB; if truncated, it says so.
+- **Rules:**
+  - Claude never saves, updates, or deletes based on the snapshot alone. A save still goes through `memory_save` or the outbox. An update based on a snapshot line has no `version`, so it is treated as a create and the similarity check catches it.
+  - If `memory_index` fails, Claude says the memories shown are from the snapshot, with its date.
+- **Not covered:** cloud sessions and claude.ai chat, which have no persistent local disk.
 
 ### F. Preflight health check
 
@@ -472,6 +487,13 @@ Shell-level tests of the `SessionStart` outbox hook:
 - all healthy → no output
 - total runtime under 1.5 s with the Worker unreachable (timeout respected)
 
+Snapshot (§7 G):
+
+- no snapshot for the current key → no snapshot output
+- snapshot present → injected with the stale header and its `as_of` date
+- snapshot over 8 KB → truncated, with a truncation note
+- non-git directory → the `_none` snapshot is used
+
 Outbox entry format: a fixture-based round-trip test (memory frontmatter + `outbox:` block) shared with the flush instructions.
 
 ### Level 4 — Surface matrix (end-to-end)
@@ -515,6 +537,8 @@ Outbox entry format: a fixture-based round-trip test (memory frontmatter + `outb
 | S11 | Connector unavailable (disable the staging connector with `/mcp`, or block the Worker), then save | H1, H3 | entry in `~/.claude/memory-outbox/`; "queued in outbox for <scope>" announced; no commit |
 | S11b | S11 continued: restore the connector, start a new session | H1, H3 | hook reports the queued count; Claude flushes; commit lands; outbox empty |
 | S11c | Queued update whose `version` went stale (memory edited from another host before the flush) | H1 + H3 | flush produces a conflict copy, not an overwrite; outbox entry removed |
+| S11e | S11 continued: with the connector still unavailable, start a new session in a repo that has a snapshot | H1, H3 | the snapshot's memories appear, labeled stale with their date; Claude says the connector is unavailable |
+| S11f | Connector healthy, new session | H1 | `~/.claude/memory-cache/<key>.md` is rewritten with a newer `as_of` |
 | S11d | Connector unavailable in a cloud session and in chat | H5, H6 | "not saved: <reason>" announced; nothing queued |
 | S12 | Preflight: break one thing at a time — revoke the GitHub token, uninstall the app from the test org, remove the user from the test org, point to a missing repo, block the Worker URL, turn auto-memory on, delete the routing rule, corrupt the scope map | H1 (all), H5 (server-side ones) | exactly one warning line per broken item, naming the right action; silent once fixed |
 | S12h | Preflight with everything healthy | all | no health output at all |
@@ -540,7 +564,7 @@ Manual hosts follow a checklist, verified the same way.
 3. Add the staging connector in claude.ai. On the Mac and VMs, run the **setup script** (`claude-memory-cloud/setup.sh`, idempotent). It:
    - turns auto-memory off
    - adds the routing rule to `~/.claude/CLAUDE.md`, with a marker line
-   - installs the `UserPromptSubmit` hook (B) and the `SessionStart` outbox + preflight hook (E, F)
+   - installs the `UserPromptSubmit` hook (B) and the `SessionStart` outbox + snapshot + preflight hook (E, F, G)
    - writes `~/.claude/memory-scopes.json` and the Worker URL
    - runs the local preflight once and prints the result In the cloud environment: set the auto-memory env var. Run Level 3, then Level 4.
 4. Deploy production.
