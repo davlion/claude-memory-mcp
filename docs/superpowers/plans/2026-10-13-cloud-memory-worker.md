@@ -104,6 +104,7 @@ claude-memory-cloud/
     ├── operations.test.ts
     ├── health.test.ts
     ├── tools.test.ts
+    ├── auth-helpers.test.ts
     ├── auth.test.ts
     ├── wiring.test.ts
     └── integration/
@@ -227,6 +228,14 @@ export interface Env {
   MIN_HOOK_VERSION: string;
 }
 
+// Types the `env` imported from "cloudflare:workers" (used in tests) as this Worker's Env.
+type WorkerEnv = Env;
+declare global {
+  namespace Cloudflare {
+    interface Env extends WorkerEnv {}
+  }
+}
+
 /** Encrypted per-grant props set at sign-in (see github-auth.ts). */
 export interface Props {
   login: string;
@@ -303,11 +312,15 @@ export function mockFetch(routes: Route[]) {
   const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const req = new Request(input as RequestInfo, init);
     calls.push(req.clone());
-    const route = routes.find(
+    // A matching regex route wins; otherwise the longest matching string prefix wins.
+    // Route order therefore doesn't matter, and a bare repo URL never shadows its sub-paths.
+    const matching = routes.filter(
       (r) =>
         (!r.method || r.method === req.method) &&
         (typeof r.url === "string" ? req.url.startsWith(r.url) : r.url.test(req.url)),
     );
+    const route = matching.find((r) => typeof r.url !== "string")
+      ?? matching.sort((a, b) => (b.url as string).length - (a.url as string).length)[0];
     if (!route) throw new Error(`unmocked fetch: ${req.method} ${req.url}`);
     return route.respond(req);
   });
@@ -335,7 +348,7 @@ node_modules/
 dist/
 ```
 
-`src/index.ts` (stub; replaced in Task 13):
+`src/index.ts` (stub; replaced in Task 12):
 ```ts
 import type { Env } from "./env";
 
@@ -1267,7 +1280,6 @@ describe("GitHubStore.snapshot", () => {
 
   it("isPrivate is false for a public repo, and when the flag is missing", async () => {
     for (const meta of [{ default_branch: "main", private: false }, { default_branch: "main" }]) {
-      // mockFetch matches by URL prefix, first match wins, so the bare repo URL goes last
       mockFetch([...repoRoutes().filter((r) => r.url !== R), { method: "GET", url: R, respond: () => json(meta) }]);
       expect((await new GitHubStore(new GitHub("t"), env.CACHE_KV).snapshot("dav/mem", "")).isPrivate).toBe(false);
     }
@@ -1294,7 +1306,7 @@ describe("GitHubStore.snapshot", () => {
       { method: "GET", url: `${R}/git/ref/heads/main`, respond: () => json({ message: "Git Repository is empty." }, 409) },
     ]);
     const snap = await new GitHubStore(new GitHub("t")).snapshot("dav/mem", "");
-    expect(snap).toEqual({ commitSha: null, files: new Map() });
+    expect(snap).toEqual({ commitSha: null, isPrivate: true, files: new Map() });
   });
 });
 
@@ -1737,7 +1749,7 @@ function indexAfter(t: Target, snap: Snapshot, changes: Change[]): string {
     if (c.content === null) next.delete(c.path);
     else next.set(c.path, { path: c.path, sha: "", content: c.content });
   }
-  const { list, conflicts } = entries({ commitSha: snap.commitSha, files: next });
+  const { list, conflicts } = entries({ ...snap, files: next });
   return buildIndex(t.displayLabel, list, conflicts);
 }
 
@@ -2062,6 +2074,9 @@ export async function scopeReachability(gh: GitHub, cfg: ScopeConfig, _appSlug: 
   return out;
 }
 
+const githubApiFail = (e: unknown): Check => ({ check: "github_api", status: "fail", detail: `unavailable (${(e as Error).message})`,
+  action: "GitHub is having problems (status page: githubstatus.com). Saves will be queued in the outbox; nothing to do." });
+
 function fmtDuration(ms: number) {
   const m = Math.max(0, Math.round(ms / 60_000));
   return `${Math.floor(m / 60)}h ${m % 60}m`;
@@ -2085,8 +2100,7 @@ export async function runHealth(o: { gh: GitHub; cfg: ScopeConfig; props: Props;
       checks.push({ check: "github_token", status: "fail", detail: "reauth_required", action: RECONNECT_ACTION });
       return checks;
     }
-    checks.push({ check: "github_api", status: "fail", detail: `unavailable (${(e as Error).message})`,
-      action: "GitHub is having problems (status page: githubstatus.com). Saves will be queued in the outbox; nothing to do." });
+    checks.push(githubApiFail(e));
     return checks;
   }
 
@@ -2109,8 +2123,7 @@ export async function runHealth(o: { gh: GitHub; cfg: ScopeConfig; props: Props;
       }
     }
   } catch (e) {
-    checks.push({ check: "github_api", status: "fail", detail: `unavailable (${(e as Error).message})`,
-      action: "GitHub is having problems (status page: githubstatus.com). Saves will be queued in the outbox; nothing to do." });
+    checks.push(githubApiFail(e));
   }
 
   if (o.project) {
@@ -2317,9 +2330,19 @@ describe("since map", () => {
     expect((await callTool(deps, "memory_read", { scope: "general", names: ["x"], since: next })).notes).toBeUndefined();
   });
 
-  it("ignores unknown keys and survives a failing check", async () => {
+  it("ignores unknown or unresolvable keys", async () => {
     const r = await callTool(deps, "memory_read", { scope: "general", names: ["x"], since: { nope: "abc", "project:someone/x": "none" } });
     expect(r.isError).toBe(false);
+    expect(r.notes).toBeUndefined();
+  });
+
+  it("a failing check never fails the tool call", async () => {
+    const real = store.snapshot.bind(store);
+    let calls = 0;
+    store.snapshot = async (repo, prefix) => { if (++calls > 1) throw new Error("boom"); return real(repo, prefix); };
+    const r = await callTool(deps, "memory_read", { scope: "general", names: ["x"], since: { general: "stale" } });
+    expect(r.isError).toBe(false);
+    expect(JSON.parse(r.text)).toEqual([{ name: "x", error: "not_found" }]);
     expect(r.notes).toBeUndefined();
   });
 });
@@ -2790,6 +2813,7 @@ git add src/github-auth.ts src/consent.ts test/auth-helpers.test.ts && git commi
 
 **Files:**
 - Modify: `src/index.ts` (replace the stub)
+- Modify: `test/smoke.test.ts`: delete the second test ("mockFetch intercepts outbound fetch from worker code"). It depends on the stub's `?probe=` hook, which this task removes; `test/auth.test.ts` now proves the same thing end to end.
 - Test: `test/wiring.test.ts`, `test/auth.test.ts`
 
 **Interfaces:**
@@ -2912,7 +2936,8 @@ const cookieJar = new Map<string, string>();
 const storeCookies = (res: Response) => {
   for (const c of res.headers.getSetCookie()) {
     const [kv] = c.split(";");
-    const [k, v] = kv!.split("=");
+    const i = kv!.indexOf("=");
+    const [k, v] = [kv!.slice(0, i), kv!.slice(i + 1)];
     cookieJar.set(k!, v ?? "");
   }
 };
@@ -3014,7 +3039,7 @@ Run: `npx vitest run && npx tsc --noEmit`
 Expected: all PASS
 
 ```bash
-git add src/index.ts test/wiring.test.ts test/auth.test.ts && git commit -m "feat: worker wiring, host pinning, health endpoint; full OAuth flow test"
+git add src/index.ts test/smoke.test.ts test/wiring.test.ts test/auth.test.ts && git commit -m "feat: worker wiring, host pinning, health endpoint; full OAuth flow test"
 ```
 
 ---
@@ -3048,7 +3073,8 @@ run("live GitHub", () => {
   const P: Target = { scopeLabel: `project:dav/it-${stamp}`, displayLabel: `project it-${stamp}`, repo, prefix: `projects/it-${stamp}/` };
   const store = () => new GitHubStore(new GitHub(token), env.CACHE_KV);
   const mem = (name: string, body = "live test\n") =>
-    ({ name, description: `integration ${name} ${stamp}`, type: "reference", body, source: "integration-test" });
+    // force: the generated descriptions are similar to each other by design; similarity is unit-tested elsewhere
+    ({ name, description: `integration ${name} ${stamp}`, type: "reference", body, source: "integration-test", force: true });
 
   it("create → read → stale update conflicts → delete, index consistent", { timeout: 60_000 }, async () => {
     const name = `it-${stamp}`;
@@ -3190,6 +3216,7 @@ git add wrangler.jsonc README.md && git commit -m "chore: staging deployment con
 - [ ] **Step 2: Edit §6 tool table.**
   - Add `source?` to `memory_save` and `memory_delete`.
   - Add the `memory_health` row and the `health` block in `memory_index`, if they aren't already present.
+  - In the `memory_scopes` row, change the `reason` values to `app_not_installed`, `not_reachable`, or `repo_public` (replacing `no_user_access`).
 
 - [ ] **Step 3: Edit §7 F server table.** Replace the separate `no_user_access` and "repo missing" rows with one `not_reachable` row whose action lists the three fixes. Explain that GitHub App user tokens return 404 for all three cases. Keep `app_not_installed` (owner-level), which can be detected.
 
