@@ -1,6 +1,6 @@
 # claude-memory-cloud — Quickstart
 
-> **Draft.** Parts 1–4 can be done now. Parts 5–8 describe steps that depend on the server, which isn't built yet; they'll be checked when it is. This file moves to the `claude-memory-cloud` repo once that repo exists.
+> **Draft.** A bootstrap script is planned that will automate most of Parts 1 and 3–5 (Part 2 stays manual). Until then, Parts 1–4 can be done by hand now. Parts 5–8 describe steps that depend on the server, which isn't built yet; they'll be checked when it is. This file moves to the `claude-memory-cloud` repo once that repo exists.
 
 claude-memory-cloud gives Claude one set of memories everywhere: Claude Code on any machine, Claude Code cloud sessions, and claude.ai chat on web, Desktop, and mobile. The memories are Markdown files in a private GitHub repo that you own. A small server, which you deploy to your own Cloudflare account, connects that repo to Claude as a custom connector.
 

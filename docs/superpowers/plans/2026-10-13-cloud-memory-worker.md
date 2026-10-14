@@ -29,7 +29,7 @@
 - **Plan 1 (this):** the Worker
 - **Plan 2:** local kit (setup.sh, hooks, CLAUDE.md rule)
 - **Plan 3:** e2e test runner + surface matrix
-- **Plan 4:** migration + production rollout + client onboarding
+- **Plan 4:** migration + production rollout + client onboarding + `bootstrap.py` for other developers (spec §10 step 7)
 
 ## Global Constraints
 

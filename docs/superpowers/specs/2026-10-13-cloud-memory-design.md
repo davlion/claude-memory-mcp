@@ -609,6 +609,19 @@ Manual hosts follow a checklist, verified the same way.
    - Done with a script that calls the production tools, so secret scanning and indexing apply.
    - Local auto-memory folders are left in place (not deleted) as a backup.
 6. Onboard the client: an org owner installs the app on their `claude-memory` repo; add the scope; redeploy.
+7. **Bootstrap script for other developers** (Plan 4, after production works). `claude-memory-cloud/bootstrap.py` uses only the Python standard library and is idempotent. It replaces most of the manual Quickstart Parts 1–5. Part 2 (Cloudflare signup, 2FA, `wrangler login`) stays manual, and so does adding the connector in claude.ai.
+   - **Preflight:** it checks `gh auth status`, `npx wrangler whoami`, and `node --version`. Each failure names its fix, e.g. "run `gh auth login`".
+   - **Memory repo:** `gh repo create <you>/claude-memory --private`, skipped if the repo already exists.
+   - **GitHub App, via GitHub's App Manifest flow:**
+     - The script serves a one-page form on `127.0.0.1:<random port>`. The form posts a manifest to `https://github.com/settings/apps/new?state=<random>` with every field from Quickstart Part 3 prefilled: name `<you>-claude-memory`, callback `https://claude-memory.<sub>.workers.dev/callback`, Contents read/write, webhook inactive, no OAuth on install, installable by any account.
+     - The user clicks **Create**. GitHub redirects to `127.0.0.1:<port>/done?code=…&state=…`. The script checks `state` and exchanges the code (`POST /app-manifests/{code}/conversions`, within the hour it's valid) for the client ID, client secret, and slug.
+     - The flow also returns a private key, which isn't needed. The script discards it without writing it anywhere, and shows the app-settings link where the user deletes it.
+   - **Install:** opens `https://github.com/apps/<slug>/installations/new`, tells the user to select only `claude-memory`, and waits for Enter.
+   - **Cloudflare:** creates the KV namespaces, writes the ids, `PUBLIC_URL`, `GITHUB_APP_SLUG`, and `SCOPES` into `wrangler.jsonc`, sets the three secrets by piping them to `wrangler secret put … --env production` on stdin, deploys, and checks `/health`.
+   - **Secrets** (client secret, encryption key) go only to `wrangler`. They are never printed, logged, or written to disk. Non-secret state (slug, client ID, subdomain, KV ids) is kept in `.bootstrap.json` (gitignored) so a rerun resumes where it stopped.
+   - **Ends** by printing the connector URL and the remaining manual steps: add the connector in claude.ai, then run `./setup.sh` on each machine.
+   - **Tests:** unit tests for the manifest contents and the `wrangler.jsonc` edit; the redirect and code exchange are tested against a local fake GitHub. Plus one real run on a fresh GitHub account and Cloudflare account, following the updated Quickstart.
+   - **Quickstart:** the main path becomes "Cloudflare signup → `wrangler login` → `./bootstrap.py` → add the connector → `./setup.sh`". The manual Parts 1, 3, 4, and 5 move to an appendix.
 
 ### Documentation
 
