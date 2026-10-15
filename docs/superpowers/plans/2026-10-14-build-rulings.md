@@ -67,4 +67,4 @@ Triaged by the Plan 1 and Plan 1b final reviews; everything not listed was judge
 - `lastRateLimit` may hold the GraphQL quota after a snapshot.
 - Truncated-tree error reports `internal` rather than a size message.
 - Live tests leave stamped artifacts in the test repo; trailer test checks only the last 5 commits.
-- Spec §7 B/H still describes a local scope-map copy; reword in Plan 2 for the per-user map.
+- ~~Spec §7 B/H still describes a local scope-map copy; reword in Plan 2 for the per-user map.~~ Done in Plan 2 Task 15.
