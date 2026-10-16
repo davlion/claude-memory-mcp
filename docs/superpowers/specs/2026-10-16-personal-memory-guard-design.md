@@ -1,6 +1,6 @@
 # Personal memory guard — design
 
-Date: 2026-10-16. Status: draft for the owner's approval. Builds on `2026-10-13-cloud-memory-design.md` (the cloud memory spec, "the spec" below) and Plan 3's findings.
+Date: 2026-10-16. Status: approved by the owner 2026-10-16. Builds on `2026-10-13-cloud-memory-design.md` (the cloud memory spec, "the spec" below) and Plan 3's findings.
 
 ## 1. Intent
 
@@ -105,6 +105,10 @@ Known risk, accepted by the owner: every commit carries `Memory-Source: <source>
 - Instructions: budget test with the new rule and many client scopes.
 - Level 4 additions: S18 (Intimate / Restricted fact refused in Claude Code, nothing committed, "not saved: personal" announced); S19 (candid opinion declined, then "save it to general" lands in `general` only); S20 (a fact naming client B in client A's repo refused); manual chat check that a personal fact goes to built-in memory.
 
-## 9. Left to the builder
+## 9. Open
+
+- Personal / Restricted may need more categories and examples (owner, at approval). The plan includes an owner review of the pattern lists and test corpora before they are final.
+
+## 10. Left to the builder
 
 Pattern lists and their wording; exact instruction and routing-rule text within the budget; the audit's form; where the guard runs relative to the similarity check; S18–S20 prompts.
