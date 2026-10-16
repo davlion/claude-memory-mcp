@@ -47,6 +47,29 @@ Decisions the build controller made on your behalf while executing the plans, in
 - defer Steps 8–9 (seed script + CPU measurement) — informational only on Workers Paid; user didn't opt in — cost: Free-plan self-hosters lack a measured CPU number until run.
 - ONE fix wave covering Important #1 (+suspended_at, index-404 action, tokenBad narrowed) and Minors #2–#7, #9; defer #8 — skill: one fix dispatch; all pre-production items — cost: larger single diff.
 
+## 2026-10-15-cloud-memory-e2e
+
+Plan 3 (Level 4 end-to-end), 2026-10-15 to 2026-10-16. Full ledger: `claude-memory-cloud/docs/plan-3/build-ledger.md`.
+
+- Work on branch `plan-3-e2e` in the main checkout, no worktree — the plan's starting point says so — none.
+- Code tasks 2–6 before Task 1 (VMs were off); Task 2's kit redeploy moved into Task 1 — no task consumed Task 1's results except two small follow-ups — a follow-up commit.
+- VMs get `sample-app` by rsync of the Mac's clone (origin intact) instead of adding GitHub credentials — the runner never pulls — the VM checkouts can't pull.
+- The runner and probe scrub every `ANTHROPIC_*`, `CLAUDE_CODE_*`, `CLAUDECODE`, `CLAUDE_PID`, `CLAUDE_EFFORT` variable (the plan listed a subset; more leak) — none.
+- H5 cloud stays manual — new cloud sessions are interactive-only (V7) — H5 rows done by hand.
+- U1's prompt-hook check replaced by a settings.json kit-hook check — stream-json never shows UserPromptSubmit output, so the old check was vacuous — none.
+- Dropped H4's partial rows from run `xdgroe` and reran H4 in full — the crash was GitHub connectivity — none.
+- S5 phrasing 3 ("the linter runs before tests") kept for both compared runs, then replaced with "we tag releases with a v prefix" — in a repo it's a project fact, not ambiguous — S5 still not ambiguous enough.
+- Cleanup deletes test files with `gh api`, and the resulting provenance ⚠ is documented in `test/e2e/README.md` — fast and deterministic; it clears at the next server write — a stale ⚠ line in staging after runs.
+- S15 (repo made public) skipped — it would expose the test repo's history; the alternative needed a SCOPES change — `repo_public` is verified only by unit tests.
+- "Remove the user from the test org" skipped — the user is its only owner — that health line unverified live.
+- Layer B (prompt hook) kept — A + C and A + B + C grids were identical, but the hook demonstrably fires (user's call) — none.
+- Snapshot written by a `PostToolUse` hook instead of Claude (kit 0.1.2) — the Write call showed in every transcript; the hook gets the full result silently — none found (18/18 regression).
+- `Edit(~/.claude-memory-cloud/cache/**)` dropped from new installs' allow rules — Claude no longer writes there — one prompt if Claude ever writes the cache by hand.
+- Server instructions built per user with the user's scope names, plus a no-remote rule and `readOnlyHint` annotations — Level 4 findings (S5, cloud) — S5 9/9 in Claude Code after.
+- Instructions held to ≤ 4000 characters by a test — Claude Code truncates server instructions at 4096 (found live: the new scope line was cut off) — any new instruction must fit.
+- The "use these tools, not a host's built-in memory" instruction was removed before going live — it conflicts with the user's open question about keeping personal memories in claude.ai — chat keeps routing some saves to built-in memory until the final review decides.
+- `memory_move` tool not built; S17 shows the read → save → delete recourse works — optional Plan 4 item — a prompt per move.
+
 ## Known follow-ups (deferred minor findings still worth doing)
 
 Triaged by the Plan 1 and Plan 1b final reviews; everything not listed was judged stay-deferred or closed.
@@ -55,6 +78,10 @@ Triaged by the Plan 1 and Plan 1b final reviews; everything not listed was judge
 - memory_search drops the project target silently when its owner scope is unreachable for reasons other than an error (app not installed, not_reachable, suspended, public): add a problem line.
 - Pin hygiene when removing a friend whose login may be reused: also `wrangler kv key delete --remote "allowlist:github-id:<login>"` (documented in the Quickstart).
 - Production checklist: production KV ids; public production app with "Only select repositories"; set the SCOPES secret before first sign-in (pins the owner's ID on first connect); run `node scripts/check-scopes.mjs` before every `secret put SCOPES`.
+- Health shows `✓ project … → <client repo>` even when that client scope fails (seen with `app_not_installed`, Plan 3 Task 10): mark the project line failed or omit it.
+- Decide chat routing between claude.ai's built-in memory and the connector (final review of Plan 3: the user may keep personal memories out of GitHub). Chat never calls `memory_index` at start, never asked the S5 scope question, and doesn't use the exact "saved to / not saved" line.
+- Optional: `memory_move` (atomic move between scopes; today read → save → delete, which prompts for the delete).
+- Optional: e2e cleanup through `memory_delete` instead of `gh api`, so runs don't leave a provenance ⚠ in staging.
 - Optional: cut per-call CPU overhead (~30 ms fixed: build the MCP server and schemas once per isolate, cache health results briefly) if Workers Free support is wanted.
 
 **Later / cleanup**
