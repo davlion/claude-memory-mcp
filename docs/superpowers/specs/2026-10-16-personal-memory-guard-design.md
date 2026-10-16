@@ -60,7 +60,7 @@ A pure module like `src/secrets.ts`, run on name, description and body after the
 
 - **Intimate and Personal / Restricted** → status `rejected_personal` with `category` (e.g. `health`, `finances`, `location`, `contract`, `legal`, `beliefs`, `sexuality`, `family`) and the message "Personal facts aren't stored on GitHub; keep it in claude.ai memory." `force` does not bypass it. Applies to every scope.
 - **Candid / about others** → status `needs_confirmation` (category `candid` or `about_others`) unless the call passes `confirmed: true`; with `confirmed: true` it is accepted **only** in `general`, and refused as `rejected_personal` (category `candid`) in any client or project scope. The instructions tell Claude to pass `confirmed` only after the user explicitly asks to keep it.
-- **Cross-client** → status `rejected_cross_client` when a save to a client scope, or to a project in a client scope, names another of the user's client scopes (its scope name or its repo's owner or name). Not applied to `general` (limited client facts are allowed there; the instructions cover confidential details).
+- **Cross-client** → status `rejected_cross_client` when a save to a client scope, or to a project in a client scope, names another of the user's client scopes (its scope name or its repo's owner login; not the repo name, which is usually `claude-memory` for every client). Not applied to `general` (limited client facts are allowed there; the instructions cover confidential details).
 - **Infrastructure** → no guard (allowed in `general` and the client's scope; the instructions make Claude ask).
 
 The three new statuses (`rejected_personal`, `needs_confirmation`, `rejected_cross_client`) are non-retryable: outbox flushing keeps such an entry and reports it, like `rejected_secret`. *(Designer's call:)* an outbox entry carries `confirmed: true` when the user had confirmed, so a confirmed save that was queued during an outage replays successfully; the outbox format and parser gain that field.
@@ -101,7 +101,7 @@ Known risk, accepted by the owner: every commit carries `Memory-Source: <source>
 
 ## 8. Testing
 
-- Unit: per-category positive and negative corpora (including near-misses like "finance team API", "health check endpoint", "family of servers", "contract test"), override behavior, scope rules, cross-client matching by scope name and repo name, normalization (fullwidth, zero-width).
+- Unit: per-category positive and negative corpora (including near-misses like "finance team API", "health check endpoint", "family of servers", "contract test"), override behavior, scope rules, cross-client matching by scope name and owner login, normalization (fullwidth, zero-width).
 - Instructions: budget test with the new rule and many client scopes.
 - Level 4 additions: S18 (Intimate / Restricted fact refused in Claude Code, nothing committed, "not saved: personal" announced); S19 (candid opinion declined, then "save it to general" lands in `general` only); S20 (a fact naming client B in client A's repo refused); manual chat check that a personal fact goes to built-in memory.
 
